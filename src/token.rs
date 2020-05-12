@@ -1,16 +1,18 @@
 use crate::sid::{is_well_known, AsSid, WellKnownSid};
 use std::io::{Error as IoError, Result as IoResult};
-use winapi::shared::minwindef::{BOOL, DWORD};
+use winapi::shared::minwindef::{BOOL, DWORD, FALSE};
 use winapi::shared::winerror::ERROR_INSUFFICIENT_BUFFER;
 use winapi::um::errhandlingapi::GetLastError;
 use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
-use winapi::um::processthreadsapi::{GetCurrentProcess, OpenProcessToken};
+use winapi::um::processthreadsapi::{GetCurrentProcess, OpenProcess, OpenProcessToken};
 use winapi::um::securitybaseapi::{CheckTokenMembership, DuplicateTokenEx, GetTokenInformation};
 use winapi::um::winnt::{
     SecurityImpersonation, TokenElevationType, TokenElevationTypeFull, TokenImpersonation,
-    TokenIntegrityLevel, WinBuiltinAdministratorsSid, WinHighLabelSid, HANDLE, MAXIMUM_ALLOWED,
-    SID, TOKEN_ELEVATION_TYPE, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
+    TokenIntegrityLevel, TokenPrimary, WinBuiltinAdministratorsSid, WinHighLabelSid, HANDLE,
+    PROCESS_QUERY_INFORMATION, SID, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_ELEVATION_TYPE,
+    TOKEN_IMPERSONATE, TOKEN_MANDATORY_LABEL, TOKEN_QUERY, TOKEN_TYPE,
 };
+use winapi::um::winuser::{GetShellWindow, GetWindowThreadProcessId};
 
 /// Indicates the effective level of privileges held by the token
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,15 +80,84 @@ impl Drop for Token {
     }
 }
 
+fn win32_error_with_context(context: &str, err: IoError) -> IoError {
+    IoError::new(err.kind(), format!("{}: {}", context, err))
+}
+
 impl Token {
     /// Obtain a handle to the primary token for this process
     pub fn with_current_process() -> IoResult<Self> {
         let mut token: HANDLE = INVALID_HANDLE_VALUE;
-        let res = unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) };
+        let res = unsafe {
+            OpenProcessToken(
+                GetCurrentProcess(),
+                TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_IMPERSONATE,
+                &mut token,
+            )
+        };
         if res != 1 {
-            Err(IoError::last_os_error())
+            Err(win32_error_with_context(
+                "OpenProcessToken(GetCurrentProcess))",
+                IoError::last_os_error(),
+            ))
         } else {
             Ok(Self { token })
+        }
+    }
+
+    /// Obtain the token from the shell process as a primary token.
+    /// This can fail if there is no shell accessible to the process,
+    /// for example if the process was spawned by an ssh session.
+    /// Why might we want this token?  We can't directly
+    /// de-elevate a token so we need to obtain a non-elevated
+    /// token from a well known source.
+    pub fn with_shell_process() -> IoResult<Self> {
+        let shell_window = unsafe { GetShellWindow() };
+        if shell_window.is_null() {
+            return Err(IoError::new(
+                std::io::ErrorKind::NotFound,
+                "there is no shell window",
+            ));
+        }
+
+        let mut shell_pid: DWORD = 0;
+        if unsafe { GetWindowThreadProcessId(shell_window, &mut shell_pid) } != 1 {
+            return Err(win32_error_with_context(
+                "GetWindowThreadProcessId",
+                IoError::last_os_error(),
+            ));
+        }
+
+        let proc = unsafe { OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, shell_pid) };
+        if proc == INVALID_HANDLE_VALUE {
+            return Err(win32_error_with_context(
+                "OpenProcess(shell_pid)",
+                IoError::last_os_error(),
+            ));
+        }
+
+        struct Process(HANDLE);
+        impl Drop for Process {
+            fn drop(&mut self) {
+                unsafe {
+                    CloseHandle(self.0);
+                }
+            }
+        }
+        let proc = Process(proc);
+
+        let mut token: HANDLE = INVALID_HANDLE_VALUE;
+        let res = unsafe { OpenProcessToken(proc.0, TOKEN_DUPLICATE, &mut token) };
+        if res != 1 {
+            Err(win32_error_with_context(
+                "OpenProcessToken(shell process)",
+                IoError::last_os_error(),
+            ))
+        } else {
+            let token = Self { token };
+
+            // And now that we have it, make a primary token from it!
+            token.duplicate_as_primary_token()
         }
     }
 
@@ -94,21 +165,32 @@ impl Token {
     /// for use in impersonation related APIs, which includes the
     /// check_membership method.
     fn duplicate_as_impersonation_token(&self) -> IoResult<Self> {
-        let mut imp: HANDLE = INVALID_HANDLE_VALUE;
+        self.duplicate(TokenImpersonation)
+    }
+
+    fn duplicate_as_primary_token(&self) -> IoResult<Self> {
+        self.duplicate(TokenPrimary)
+    }
+
+    fn duplicate(&self, token_type: TOKEN_TYPE) -> IoResult<Self> {
+        let mut dup: HANDLE = INVALID_HANDLE_VALUE;
         let res = unsafe {
             DuplicateTokenEx(
                 self.token,
-                MAXIMUM_ALLOWED,
+                TOKEN_ASSIGN_PRIMARY | TOKEN_IMPERSONATE | TOKEN_DUPLICATE | TOKEN_QUERY,
                 std::ptr::null_mut(),
                 SecurityImpersonation,
-                TokenImpersonation,
-                &mut imp,
+                token_type,
+                &mut dup,
             )
         };
         if res != 1 {
-            Err(IoError::last_os_error())
+            Err(win32_error_with_context(
+                "DuplicateTokenEx",
+                IoError::last_os_error(),
+            ))
         } else {
-            Ok(Self { token: imp })
+            Ok(Self { token: dup })
         }
     }
 
@@ -120,7 +202,10 @@ impl Token {
         let res =
             unsafe { CheckTokenMembership(self.token, sid.as_sid() as *mut _, &mut is_member) };
         if res != 1 {
-            Err(IoError::last_os_error())
+            Err(win32_error_with_context(
+                "CheckTokenMembership",
+                IoError::last_os_error(),
+            ))
         } else {
             Ok(is_member == 1)
         }
@@ -151,7 +236,10 @@ impl Token {
 
         // The call should have failed and told us we need more space
         if err != ERROR_INSUFFICIENT_BUFFER {
-            return Err(IoError::last_os_error());
+            return Err(win32_error_with_context(
+                "GetTokenInformation TokenIntegrityLevel unexpected failure",
+                IoError::last_os_error(),
+            ));
         }
 
         // Allocate and zero out the storage
@@ -166,7 +254,10 @@ impl Token {
                 &mut size,
             ) == 0
             {
-                return Err(IoError::last_os_error());
+                return Err(win32_error_with_context(
+                    "GetTokenInformation TokenIntegrityLevel",
+                    IoError::last_os_error(),
+                ));
             }
         };
 
@@ -190,7 +281,10 @@ impl Token {
             )
         };
         if res != 1 {
-            Err(IoError::last_os_error())
+            Err(win32_error_with_context(
+                "GetTokenInformation TOKEN_ELEVATION_TYPE",
+                IoError::last_os_error(),
+            ))
         } else {
             Ok(ele_type)
         }
@@ -213,6 +307,35 @@ impl Token {
             Ok(PrivilegeLevel::HighIntegrityAdmin)
         } else {
             Ok(PrivilegeLevel::NotPrivileged)
+        }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn get_own_token() {
+        let token = Token::with_current_process().unwrap();
+        let level = token.privilege_level().unwrap();
+        // We can't make any assertions about what the level is,
+        // but we can at least assume that we should be able
+        // to successfully reach this point
+        eprintln!("priv level is {:?}", level);
+    }
+
+    #[test]
+    fn get_shell_token() {
+        // We should either successfully obtain the shell token (if we're
+        // connected to a desktop with a shell), or get a NotFound error.
+        // We treat any other error as a test failure.
+        match Token::with_shell_process() {
+            Ok(_) => eprintln!("got shell token!"),
+            Err(err) => match err.kind() {
+                std::io::ErrorKind::NotFound => eprintln!("There is no shell"),
+                _ => panic!("failed to get shell token: {:?}", err),
+            },
         }
     }
 }
