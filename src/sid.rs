@@ -2,7 +2,7 @@ use std::io::{Error as IoError, Result as IoResult};
 use winapi::shared::minwindef::DWORD;
 use winapi::shared::winerror::ERROR_INSUFFICIENT_BUFFER;
 use winapi::um::errhandlingapi::GetLastError;
-use winapi::um::securitybaseapi::{CreateWellKnownSid, IsWellKnownSid};
+use winapi::um::securitybaseapi::{CreateWellKnownSid, GetLengthSid, IsWellKnownSid};
 use winapi::um::winnt::SID;
 use winapi::um::winnt::WELL_KNOWN_SID_TYPE;
 
@@ -22,6 +22,10 @@ impl AsSid for *const SID {
 pub fn is_well_known<S: AsSid>(sid: S, sid_type: WELL_KNOWN_SID_TYPE) -> bool {
     let result = unsafe { IsWellKnownSid(sid.as_sid() as *mut _, sid_type) };
     result == 1
+}
+
+pub fn get_length_sid<S: AsSid>(sid: S) -> DWORD {
+    unsafe { GetLengthSid(sid.as_sid() as *mut _) }
 }
 
 /// Stores the data for a well known sid instance

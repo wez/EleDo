@@ -20,5 +20,6 @@ winapi = { version = "0.3", features = [
   "processthreadsapi",
   "securitybaseapi",
   "winerror",
+  "winsafer",
   "winuser",
 ]}

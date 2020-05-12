@@ -1,16 +1,23 @@
-use crate::sid::{is_well_known, AsSid, WellKnownSid};
+use crate::sid::{get_length_sid, is_well_known, AsSid, WellKnownSid};
 use std::io::{Error as IoError, Result as IoResult};
 use winapi::shared::minwindef::{BOOL, DWORD, FALSE};
 use winapi::shared::winerror::ERROR_INSUFFICIENT_BUFFER;
 use winapi::um::errhandlingapi::GetLastError;
 use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
 use winapi::um::processthreadsapi::{GetCurrentProcess, OpenProcess, OpenProcessToken};
-use winapi::um::securitybaseapi::{CheckTokenMembership, DuplicateTokenEx, GetTokenInformation};
+use winapi::um::securitybaseapi::{
+    CheckTokenMembership, DuplicateTokenEx, GetTokenInformation, SetTokenInformation,
+};
 use winapi::um::winnt::{
     SecurityImpersonation, TokenElevationType, TokenElevationTypeFull, TokenImpersonation,
-    TokenIntegrityLevel, TokenPrimary, WinBuiltinAdministratorsSid, WinHighLabelSid, HANDLE,
-    PROCESS_QUERY_INFORMATION, SID, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_ELEVATION_TYPE,
+    TokenIntegrityLevel, TokenPrimary, WinBuiltinAdministratorsSid, WinHighLabelSid,
+    WinMediumLabelSid, HANDLE, PROCESS_QUERY_INFORMATION, SE_GROUP_INTEGRITY, SID,
+    SID_AND_ATTRIBUTES, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_ELEVATION_TYPE,
     TOKEN_IMPERSONATE, TOKEN_MANDATORY_LABEL, TOKEN_QUERY, TOKEN_TYPE,
+};
+use winapi::um::winsafer::{
+    SaferCloseLevel, SaferComputeTokenFromLevel, SaferCreateLevel, SAFER_LEVELID_NORMALUSER,
+    SAFER_LEVEL_HANDLE, SAFER_LEVEL_OPEN, SAFER_SCOPEID_USER,
 };
 use winapi::um::winuser::{GetShellWindow, GetWindowThreadProcessId};
 
@@ -158,6 +165,80 @@ impl Token {
 
             // And now that we have it, make a primary token from it!
             token.duplicate_as_primary_token()
+        }
+    }
+
+    /// Build a medium integrity level normal user access token
+    /// from the current token.
+    /// This is most suitable in the case where you have a
+    /// HighIntegrityAdmin privilege level and want to proceed
+    /// with a normal privilege token.
+    pub fn as_medium_integrity_safer_token(&self) -> IoResult<Self> {
+        let mut level: SAFER_LEVEL_HANDLE = std::ptr::null_mut();
+        let res = unsafe {
+            SaferCreateLevel(
+                SAFER_SCOPEID_USER,
+                SAFER_LEVELID_NORMALUSER,
+                SAFER_LEVEL_OPEN,
+                &mut level,
+                std::ptr::null_mut(),
+            )
+        };
+        if res != 1 {
+            return Err(win32_error_with_context(
+                "SaferCreateLevel",
+                IoError::last_os_error(),
+            ));
+        }
+
+        struct SaferHandle(SAFER_LEVEL_HANDLE);
+        impl Drop for SaferHandle {
+            fn drop(&mut self) {
+                unsafe { SaferCloseLevel(self.0) };
+            }
+        }
+        let level = SaferHandle(level);
+
+        let mut token = INVALID_HANDLE_VALUE;
+        let res = unsafe {
+            SaferComputeTokenFromLevel(level.0, self.token, &mut token, 0, std::ptr::null_mut())
+        };
+        if res != 1 {
+            return Err(win32_error_with_context(
+                "SaferComputeTokenFromLevel",
+                IoError::last_os_error(),
+            ));
+        }
+
+        let token = Self { token };
+        token.set_medium_integrity()?;
+        Ok(token)
+    }
+
+    fn set_medium_integrity(&self) -> IoResult<()> {
+        let medium = WellKnownSid::with_well_known(WinMediumLabelSid)?;
+        let mut tml = TOKEN_MANDATORY_LABEL {
+            Label: SID_AND_ATTRIBUTES {
+                Attributes: SE_GROUP_INTEGRITY,
+                Sid: medium.as_sid() as *mut _,
+            },
+        };
+
+        let res = unsafe {
+            SetTokenInformation(
+                self.token,
+                TokenIntegrityLevel,
+                &mut tml as *mut TOKEN_MANDATORY_LABEL as *mut _,
+                std::mem::size_of_val(&tml) as u32 + get_length_sid(&medium),
+            )
+        };
+        if res != 1 {
+            Err(win32_error_with_context(
+                "SetTokenInformation(TokenIntegrityLevel Medium)",
+                IoError::last_os_error(),
+            ))
+        } else {
+            Ok(())
         }
     }
 
@@ -323,6 +404,12 @@ mod test {
         // but we can at least assume that we should be able
         // to successfully reach this point
         eprintln!("priv level is {:?}", level);
+
+        // Verify that we can build a medium token from this,
+        // and that the medium token doesn't show as privileged
+        let medium = token.as_medium_integrity_safer_token().unwrap();
+        let level = medium.privilege_level().unwrap();
+        assert_eq!(level, PrivilegeLevel::NotPrivileged);
     }
 
     #[test]
