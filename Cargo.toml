@@ -16,6 +16,8 @@ anyhow = "1.0"
 thiserror = "1.0"
 winapi = { version = "0.3", features = [
   "errhandlingapi",
+  "handleapi",
+  "processthreadsapi",
   "securitybaseapi",
   "winerror",
   "winuser",
