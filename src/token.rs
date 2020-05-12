@@ -6,7 +6,8 @@ use winapi::um::errhandlingapi::GetLastError;
 use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
 use winapi::um::processthreadsapi::{GetCurrentProcess, OpenProcess, OpenProcessToken};
 use winapi::um::securitybaseapi::{
-    CheckTokenMembership, DuplicateTokenEx, GetTokenInformation, SetTokenInformation,
+    CheckTokenMembership, DuplicateTokenEx, GetTokenInformation, ImpersonateLoggedOnUser,
+    SetTokenInformation,
 };
 use winapi::um::winnt::{
     SecurityImpersonation, TokenElevationType, TokenElevationTypeFull, TokenImpersonation,
@@ -388,6 +389,23 @@ impl Token {
             Ok(PrivilegeLevel::HighIntegrityAdmin)
         } else {
             Ok(PrivilegeLevel::NotPrivileged)
+        }
+    }
+
+    /// Impersonate applies the token to the current thread only.
+    /// This isn't a supported API: it is present to furnish an
+    /// example that shows that it doesn't behave how you might
+    /// expect!
+    #[doc(hidden)]
+    pub fn impersonate(&self) -> IoResult<()> {
+        let res = unsafe { ImpersonateLoggedOnUser(self.token) };
+        if res != 1 {
+            Err(win32_error_with_context(
+                "ImpersonateLoggedOnUser",
+                IoError::last_os_error(),
+            ))
+        } else {
+            Ok(())
         }
     }
 }
