@@ -2,6 +2,7 @@ use crate::win32_error_with_context;
 use crate::{PrivilegeLevel, Token};
 use std::convert::TryInto;
 use std::io::{Error as IoError, Result as IoResult};
+use std::ptr::null_mut;
 use winapi::shared::minwindef::{BOOL, DWORD, LPVOID};
 use winapi::shared::winerror::ERROR_INSUFFICIENT_BUFFER;
 use winapi::um::errhandlingapi::GetLastError;
@@ -11,12 +12,15 @@ use winapi::um::libloaderapi::GetModuleFileNameW;
 use winapi::um::minwinbase::SECURITY_ATTRIBUTES;
 use winapi::um::namedpipeapi::CreatePipe;
 use winapi::um::processenv::GetCommandLineW;
+use winapi::um::processenv::GetStdHandle;
 use winapi::um::processthreadsapi::{
     CreateProcessAsUserW, GetExitCodeProcess, PROCESS_INFORMATION, STARTUPINFOW,
 };
 use winapi::um::synchapi::WaitForSingleObject;
 use winapi::um::winbase::{
-    lstrlenW, HANDLE_FLAG_INHERIT, INFINITE, STARTF_USESHOWWINDOW, STARTF_USESTDHANDLES,
+    lstrlenW, CREATE_DEFAULT_ERROR_MODE, CREATE_NEW_CONSOLE, CREATE_NEW_PROCESS_GROUP,
+    CREATE_UNICODE_ENVIRONMENT, HANDLE_FLAG_INHERIT, INFINITE, STARTF_USESHOWWINDOW,
+    STARTF_USESTDHANDLES, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
 };
 use winapi::um::winnt::HANDLE;
 use winapi::um::winnt::{LPCWSTR, LPWSTR};
@@ -75,7 +79,7 @@ impl std::io::Read for PipeHandle {
                 buf.as_mut_ptr() as *mut _,
                 buf.len() as _,
                 &mut num_read,
-                std::ptr::null_mut(),
+                null_mut(),
             )
         };
         if ok == 0 {
@@ -100,7 +104,7 @@ impl std::io::Write for PipeHandle {
                 buf.as_ptr() as *const _,
                 buf.len() as u32,
                 &mut num_wrote,
-                std::ptr::null_mut(),
+                null_mut(),
             )
         };
         if ok == 0 {
@@ -136,7 +140,7 @@ impl PipePair {
     fn new() -> IoResult<Self> {
         let mut sa = SECURITY_ATTRIBUTES {
             nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
-            lpSecurityDescriptor: std::ptr::null_mut(),
+            lpSecurityDescriptor: null_mut(),
             bInheritHandle: 0,
         };
         let mut read: HANDLE = INVALID_HANDLE_VALUE as _;
@@ -158,9 +162,8 @@ impl PipePair {
 fn get_module_file_name() -> Vec<u16> {
     let mut name = vec![0u16; 1024];
     loop {
-        let len = unsafe {
-            GetModuleFileNameW(std::ptr::null_mut(), name.as_mut_ptr(), name.len() as u32)
-        } as usize;
+        let len = unsafe { GetModuleFileNameW(null_mut(), name.as_mut_ptr(), name.len() as u32) }
+            as usize;
         // GetModuleFileNameW returns the truncated length, not the actual
         // length, so we don't have much choice but to grow exponentially
         // if our buffer wasn't large enough.
@@ -188,24 +191,69 @@ fn get_command_line() -> Vec<u16> {
     res
 }
 
-/// If the token is PrivilegeLevel::NotPrivileged then this function
-/// will return `Ok` and the intent is that the host program continue
-/// with its normal operation.
-///
-/// Otherwise, assuming no errors were detected, this function will
-/// not return to the caller.  Instead a reduced privilege token
-/// will be created and used to spawn a copy of the host program,
-/// passing through the arguments from the current process.
-/// *This* process will remain running to bridge pipes for the stdio
-/// streams to the new process and to wait for the child process
-/// and then terminate *this* process and exit with the exit code
-/// from the child.
-pub fn spawn_with_reduced_privileges(token: &Token) -> IoResult<()> {
-    let level = token.privilege_level()?;
-    if level == PrivilegeLevel::NotPrivileged {
-        return Ok(());
+/// Spawn a copy of the current process using the provided token.
+/// The existing streams are passed through to the child.
+/// On success, does not return to the caller; it will terminate
+/// the current process and assign the exit status from the child.
+fn spawn_with_current_io_streams(token: &Token) -> IoResult<()> {
+    let mut si: STARTUPINFOW = unsafe { std::mem::zeroed() };
+    si.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
+    si.dwFlags = STARTF_USESTDHANDLES;
+
+    unsafe {
+        si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+        si.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+        si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
     }
 
+    let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
+    let mut exe_path = get_module_file_name();
+    let mut command_line = get_command_line();
+    let env = null_mut();
+    let cwd = null_mut();
+    let proc_attributes = null_mut();
+    let thread_attributes = null_mut();
+    let inherit_handles = true;
+
+    let res = unsafe {
+        CreateProcessAsUserW(
+            token.token,
+            exe_path.as_mut_ptr(),
+            command_line.as_mut_ptr(),
+            proc_attributes,
+            thread_attributes,
+            inherit_handles as _,
+            CREATE_UNICODE_ENVIRONMENT,
+            env,
+            cwd,
+            &mut si,
+            &mut pi,
+        )
+    };
+    if res != 1 {
+        return Err(win32_error_with_context(
+            "CreateProcessAsUserW",
+            IoError::last_os_error(),
+        ));
+    }
+
+    unsafe {
+        WaitForSingleObject(pi.hProcess, INFINITE);
+    }
+
+    let mut exit_code = 1;
+    unsafe { GetExitCodeProcess(pi.hProcess, &mut exit_code) };
+    std::process::exit(exit_code.try_into().unwrap());
+}
+
+/// Spawn a copy of the current process with the provided token.
+/// A fresh console is allocated and hidden (not through choice!)
+/// and a set of pipes established between the current process
+/// and the new child that will pass through the associated
+/// stdio streams.
+/// On success, does not return to the caller; it will terminate
+/// the current process and assign the exit status from the child.
+fn spawn_with_piped_streams(token: &Token) -> IoResult<()> {
     let mut si: STARTUPINFOW = unsafe { std::mem::zeroed() };
     si.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
     // CreateProcessWithTokenW forces the use of a new console
@@ -213,11 +261,6 @@ pub fn spawn_with_reduced_privileges(token: &Token) -> IoResult<()> {
     // down console handles from the current process, so we
     // have no choice but to proxy pipes between our parent
     // and the child.
-    // While we don't strictly need to employ pipes for the
-    // CreateProcessAsUserW mode of operation, we do do still
-    // need to wait for the child and propagate its exit status
-    // so it ends up being simpler just to use the same treatment
-    // for io and windowing for both cases.
     si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
     si.wShowWindow = SW_HIDE as _;
 
@@ -236,64 +279,35 @@ pub fn spawn_with_reduced_privileges(token: &Token) -> IoResult<()> {
     let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
     let mut exe_path = get_module_file_name();
     let mut command_line = get_command_line();
+    let env = null_mut();
+    let cwd = null_mut();
+    let logon_flags = 0;
 
-    match level {
-        // A "regular" elevated session cannot have its elevated-ness
-        // removed via Token::as_medium_integrity_safer_token()
-        // so we have to use the shell process token instead.
-        // Fortunately(?) regular elevated sessions should always
-        // be running in a context where there is a shell process.
-        PrivilegeLevel::Elevated => unsafe {
-            let shell_token = Token::with_shell_process()?;
-
-            let res = CreateProcessWithTokenW(
-                shell_token.token,
-                0,
-                exe_path.as_mut_ptr(),
-                command_line.as_mut_ptr(),
-                0,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                &mut si,
-                &mut pi,
-            );
-            if res != 1 {
-                return Err(win32_error_with_context(
-                    "CreateProcessWithTokenW",
-                    IoError::last_os_error(),
-                ));
-            }
-        },
-
-        // eg: the ssh session case.  We have higher privilege level
-        // than a regular elevated session so it's easier for us to
-        // spawn a session with a simpler restricted token.
-        PrivilegeLevel::HighIntegrityAdmin => unsafe {
-            let medium_token = token.as_medium_integrity_safer_token()?;
-
-            let res = CreateProcessAsUserW(
-                medium_token.token,
-                exe_path.as_mut_ptr(),
-                command_line.as_mut_ptr(),
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                true as _,
-                0,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                &mut si,
-                &mut pi,
-            );
-            if res != 1 {
-                return Err(win32_error_with_context(
-                    "CreateProcessAsUserW",
-                    IoError::last_os_error(),
-                ));
-            }
-        },
-
-        PrivilegeLevel::NotPrivileged => unreachable!(),
+    let res = unsafe {
+        CreateProcessWithTokenW(
+            token.token,
+            logon_flags,
+            exe_path.as_mut_ptr(),
+            command_line.as_mut_ptr(),
+            CREATE_UNICODE_ENVIRONMENT|
+            // Note that these flags are unconditoinally or'd
+            // in by CreateProcessWithTokenW: they're included
+            // here to make it more obvious that these apply.
+            CREATE_DEFAULT_ERROR_MODE|
+            CREATE_NEW_CONSOLE|
+            CREATE_NEW_PROCESS_GROUP,
+            env,
+            cwd,
+            &mut si,
+            &mut pi,
+        )
     };
+    if res != 1 {
+        return Err(win32_error_with_context(
+            "CreateProcessWithTokenW",
+            IoError::last_os_error(),
+        ));
+    }
 
     drop(stdin_pipe.read);
     drop(stdout_pipe.write);
@@ -328,4 +342,37 @@ pub fn spawn_with_reduced_privileges(token: &Token) -> IoResult<()> {
     let mut exit_code = 1;
     unsafe { GetExitCodeProcess(pi.hProcess, &mut exit_code) };
     std::process::exit(exit_code.try_into().unwrap());
+}
+
+/// If the token is PrivilegeLevel::NotPrivileged then this function
+/// will return `Ok` and the intent is that the host program continue
+/// with its normal operation.
+///
+/// Otherwise, assuming no errors were detected, this function will
+/// not return to the caller.  Instead a reduced privilege token
+/// will be created and used to spawn a copy of the host program,
+/// passing through the arguments from the current process.
+/// *This* process will remain running to bridge pipes for the stdio
+/// streams to the new process and to wait for the child process
+/// and then terminate *this* process and exit with the exit code
+/// from the child.
+pub fn spawn_with_reduced_privileges(token: &Token) -> IoResult<()> {
+    let level = token.privilege_level()?;
+
+    match level {
+        PrivilegeLevel::NotPrivileged => Ok(()),
+        PrivilegeLevel::Elevated => {
+            // A "regular" elevated session cannot have its elevated-ness
+            // removed via Token::as_medium_integrity_safer_token()
+            // so we have to use the shell process token instead.
+            // Fortunately(?) regular elevated sessions should always
+            // be running in a context where there is a shell process.
+            let shell_token = Token::with_shell_process()?;
+            spawn_with_piped_streams(&shell_token)
+        }
+        PrivilegeLevel::HighIntegrityAdmin => {
+            let medium_token = token.as_medium_integrity_safer_token()?;
+            spawn_with_current_io_streams(&medium_token)
+        }
+    }
 }
