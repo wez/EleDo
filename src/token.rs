@@ -1,6 +1,7 @@
 use crate::sid::{get_length_sid, is_well_known, AsSid, WellKnownSid};
 use crate::win32_error_with_context;
 use std::io::{Error as IoError, Result as IoResult};
+use std::ptr::null_mut;
 use winapi::shared::minwindef::{BOOL, DWORD, FALSE};
 use winapi::shared::winerror::ERROR_INSUFFICIENT_BUFFER;
 use winapi::um::errhandlingapi::GetLastError;
@@ -170,14 +171,14 @@ impl Token {
     /// HighIntegrityAdmin privilege level and want to proceed
     /// with a normal privilege token.
     pub fn as_medium_integrity_safer_token(&self) -> IoResult<Self> {
-        let mut level: SAFER_LEVEL_HANDLE = std::ptr::null_mut();
+        let mut level: SAFER_LEVEL_HANDLE = null_mut();
         let res = unsafe {
             SaferCreateLevel(
                 SAFER_SCOPEID_USER,
                 SAFER_LEVELID_NORMALUSER,
                 SAFER_LEVEL_OPEN,
                 &mut level,
-                std::ptr::null_mut(),
+                null_mut(),
             )
         };
         if res != 1 {
@@ -196,9 +197,8 @@ impl Token {
         let level = SaferHandle(level);
 
         let mut token = INVALID_HANDLE_VALUE;
-        let res = unsafe {
-            SaferComputeTokenFromLevel(level.0, self.token, &mut token, 0, std::ptr::null_mut())
-        };
+        let res =
+            unsafe { SaferComputeTokenFromLevel(level.0, self.token, &mut token, 0, null_mut()) };
         if res != 1 {
             return Err(win32_error_with_context(
                 "SaferComputeTokenFromLevel",
@@ -260,7 +260,7 @@ impl Token {
                     | TOKEN_IMPERSONATE
                     | TOKEN_DUPLICATE
                     | TOKEN_QUERY,
-                std::ptr::null_mut(),
+                null_mut(),
                 SecurityImpersonation,
                 token_type,
                 &mut dup,
@@ -306,13 +306,7 @@ impl Token {
         let err;
 
         unsafe {
-            GetTokenInformation(
-                self.token,
-                TokenIntegrityLevel,
-                std::ptr::null_mut(),
-                0,
-                &mut size,
-            );
+            GetTokenInformation(self.token, TokenIntegrityLevel, null_mut(), 0, &mut size);
             err = GetLastError();
         };
 
