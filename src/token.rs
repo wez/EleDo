@@ -1,4 +1,5 @@
 use crate::sid::{get_length_sid, is_well_known, AsSid, WellKnownSid};
+use crate::win32_error_with_context;
 use std::io::{Error as IoError, Result as IoResult};
 use winapi::shared::minwindef::{BOOL, DWORD, FALSE};
 use winapi::shared::winerror::ERROR_INSUFFICIENT_BUFFER;
@@ -13,8 +14,9 @@ use winapi::um::winnt::{
     SecurityImpersonation, TokenElevationType, TokenElevationTypeFull, TokenImpersonation,
     TokenIntegrityLevel, TokenPrimary, WinBuiltinAdministratorsSid, WinHighLabelSid,
     WinMediumLabelSid, HANDLE, PROCESS_QUERY_INFORMATION, SE_GROUP_INTEGRITY, SID,
-    SID_AND_ATTRIBUTES, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_ELEVATION_TYPE,
-    TOKEN_IMPERSONATE, TOKEN_MANDATORY_LABEL, TOKEN_QUERY, TOKEN_TYPE,
+    SID_AND_ATTRIBUTES, TOKEN_ADJUST_DEFAULT, TOKEN_ADJUST_SESSIONID, TOKEN_ASSIGN_PRIMARY,
+    TOKEN_DUPLICATE, TOKEN_ELEVATION_TYPE, TOKEN_IMPERSONATE, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
+    TOKEN_TYPE,
 };
 use winapi::um::winsafer::{
     SaferCloseLevel, SaferComputeTokenFromLevel, SaferCreateLevel, SAFER_LEVELID_NORMALUSER,
@@ -25,7 +27,9 @@ use winapi::um::winuser::{GetShellWindow, GetWindowThreadProcessId};
 /// Indicates the effective level of privileges held by the token
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrivilegeLevel {
-    /// The token isn't privileged
+    /// The token isn't privileged OR may be privileged in
+    /// an unusual way that we don't know how to guarantee
+    /// that we can/should reduce privilege or do so successfully.
     NotPrivileged,
     /// The token is an elevated token produced via runas/UAC
     Elevated,
@@ -77,7 +81,7 @@ impl TokenIntegrityLevel {
 /// For the purposes of this crate, we are concerned with reducing
 /// the scope of the privileges in a given Token.
 pub struct Token {
-    token: HANDLE,
+    pub(crate) token: HANDLE,
 }
 
 impl Drop for Token {
@@ -86,10 +90,6 @@ impl Drop for Token {
             CloseHandle(self.token);
         }
     }
-}
-
-fn win32_error_with_context(context: &str, err: IoError) -> IoError {
-    IoError::new(err.kind(), format!("{}: {}", context, err))
 }
 
 impl Token {
@@ -129,12 +129,7 @@ impl Token {
         }
 
         let mut shell_pid: DWORD = 0;
-        if unsafe { GetWindowThreadProcessId(shell_window, &mut shell_pid) } != 1 {
-            return Err(win32_error_with_context(
-                "GetWindowThreadProcessId",
-                IoError::last_os_error(),
-            ));
-        }
+        let _thread_id = unsafe { GetWindowThreadProcessId(shell_window, &mut shell_pid) };
 
         let proc = unsafe { OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, shell_pid) };
         if proc == INVALID_HANDLE_VALUE {
@@ -259,7 +254,12 @@ impl Token {
         let res = unsafe {
             DuplicateTokenEx(
                 self.token,
-                TOKEN_ASSIGN_PRIMARY | TOKEN_IMPERSONATE | TOKEN_DUPLICATE | TOKEN_QUERY,
+                TOKEN_ADJUST_SESSIONID
+                    | TOKEN_ADJUST_DEFAULT
+                    | TOKEN_ASSIGN_PRIMARY
+                    | TOKEN_IMPERSONATE
+                    | TOKEN_DUPLICATE
+                    | TOKEN_QUERY,
                 std::ptr::null_mut(),
                 SecurityImpersonation,
                 token_type,
