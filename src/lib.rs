@@ -1,5 +1,9 @@
 use std::io::Error as IoError;
 
+mod bridge;
+mod command;
+mod pipe;
+mod process;
 mod sid;
 mod spawn;
 mod token;

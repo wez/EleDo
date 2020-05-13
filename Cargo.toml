@@ -9,6 +9,18 @@ documentation = "https://docs.rs/deelevate"
 readme = "README.md"
 keywords = ["UAC", "elevate", "privileges"]
 
+[[bin]]
+name = "eledo"
+path = "bin/eledo.rs"
+
+[[bin]]
+name = "normdo"
+path = "bin/normdo.rs"
+
+[[bin]]
+name = "ptybridge"
+path = "bin/ptybridge.rs"
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]

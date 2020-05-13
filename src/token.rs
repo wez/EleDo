@@ -1,12 +1,13 @@
+use crate::process::Process;
 use crate::sid::{get_length_sid, is_well_known, AsSid, WellKnownSid};
 use crate::win32_error_with_context;
 use std::io::{Error as IoError, Result as IoResult};
 use std::ptr::null_mut;
-use winapi::shared::minwindef::{BOOL, DWORD, FALSE};
+use winapi::shared::minwindef::{BOOL, DWORD};
 use winapi::shared::winerror::ERROR_INSUFFICIENT_BUFFER;
 use winapi::um::errhandlingapi::GetLastError;
 use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
-use winapi::um::processthreadsapi::{GetCurrentProcess, OpenProcess, OpenProcessToken};
+use winapi::um::processthreadsapi::{GetCurrentProcess, OpenProcessToken};
 use winapi::um::securitybaseapi::{
     CheckTokenMembership, DuplicateTokenEx, GetTokenInformation, ImpersonateLoggedOnUser,
     SetTokenInformation,
@@ -134,26 +135,10 @@ impl Token {
         let mut shell_pid: DWORD = 0;
         let _thread_id = unsafe { GetWindowThreadProcessId(shell_window, &mut shell_pid) };
 
-        let proc = unsafe { OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, shell_pid) };
-        if proc == INVALID_HANDLE_VALUE {
-            return Err(win32_error_with_context(
-                "OpenProcess(shell_pid)",
-                IoError::last_os_error(),
-            ));
-        }
-
-        struct Process(HANDLE);
-        impl Drop for Process {
-            fn drop(&mut self) {
-                unsafe {
-                    CloseHandle(self.0);
-                }
-            }
-        }
-        let proc = Process(proc);
+        let proc = Process::with_process_id(PROCESS_QUERY_INFORMATION, false, shell_pid)?;
 
         let mut token: HANDLE = INVALID_HANDLE_VALUE;
-        let res = unsafe { OpenProcessToken(proc.0, TOKEN_DUPLICATE, &mut token) };
+        let res = unsafe { OpenProcessToken(proc.as_handle(), TOKEN_DUPLICATE, &mut token) };
         if res != 1 {
             Err(win32_error_with_context(
                 "OpenProcessToken(shell process)",
