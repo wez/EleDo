@@ -11,20 +11,19 @@ use winapi::um::handleapi::{CloseHandle, SetHandleInformation, INVALID_HANDLE_VA
 use winapi::um::libloaderapi::GetModuleFileNameW;
 use winapi::um::minwinbase::SECURITY_ATTRIBUTES;
 use winapi::um::namedpipeapi::CreatePipe;
-use winapi::um::processenv::GetCommandLineW;
-use winapi::um::processenv::GetStdHandle;
+use winapi::um::processenv::{GetCommandLineW, GetCurrentDirectoryW, GetStdHandle};
 use winapi::um::processthreadsapi::{
     CreateProcessAsUserW, GetExitCodeProcess, PROCESS_INFORMATION, STARTUPINFOW,
 };
 use winapi::um::synchapi::WaitForSingleObject;
+use winapi::um::userenv::{CreateEnvironmentBlock, DestroyEnvironmentBlock};
 use winapi::um::winbase::{
     lstrlenW, CREATE_DEFAULT_ERROR_MODE, CREATE_NEW_CONSOLE, CREATE_NEW_PROCESS_GROUP,
-    CREATE_UNICODE_ENVIRONMENT, HANDLE_FLAG_INHERIT, INFINITE, STARTF_USESHOWWINDOW,
-    STARTF_USESTDHANDLES, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+    CREATE_UNICODE_ENVIRONMENT, HANDLE_FLAG_INHERIT, INFINITE, STARTF_USESTDHANDLES,
+    STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
 };
 use winapi::um::winnt::HANDLE;
 use winapi::um::winnt::{LPCWSTR, LPWSTR};
-use winapi::um::winuser::SW_HIDE;
 
 extern "system" {
     /// This is missing from the currently available versions of the winapi crate.
@@ -176,6 +175,20 @@ fn get_module_file_name() -> Vec<u16> {
     }
 }
 
+fn get_current_directory() -> Vec<u16> {
+    let mut name = vec![0u16; 1024];
+    loop {
+        let len = unsafe { GetCurrentDirectoryW(name.len() as u32, name.as_mut_ptr()) } as usize;
+
+        let completed = len <= name.len();
+        name.resize(len, 0);
+
+        if completed {
+            return name;
+        }
+    }
+}
+
 /// Returns the command line string in a mutable buffer.
 /// We can't simply pass GetCommandLineW to the process spawning functions
 /// as they do modify the text!
@@ -189,6 +202,33 @@ fn get_command_line() -> Vec<u16> {
     };
     res.extend_from_slice(slice);
     res
+}
+
+struct EnvironmentBlock(LPVOID);
+impl Drop for EnvironmentBlock {
+    fn drop(&mut self) {
+        unsafe {
+            DestroyEnvironmentBlock(self.0);
+        }
+    }
+}
+
+impl EnvironmentBlock {
+    /// Create a copy of the current environment, but do so for the provided token.
+    /// We have to do this explicitly as some of the CreateProcessAsXXX
+    /// calls will default to a different process environment otherwise!
+    pub fn with_token(token: &Token) -> IoResult<Self> {
+        let mut block = null_mut();
+        let inherit = true;
+        if unsafe { CreateEnvironmentBlock(&mut block, token.token, inherit as _) } != 1 {
+            Err(win32_error_with_context(
+                "CreateEnvironmentBlock",
+                IoError::last_os_error(),
+            ))
+        } else {
+            Ok(Self(block))
+        }
+    }
 }
 
 /// Spawn a copy of the current process using the provided token.
@@ -209,8 +249,8 @@ fn spawn_with_current_io_streams(token: &Token) -> IoResult<()> {
     let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
     let mut exe_path = get_module_file_name();
     let mut command_line = get_command_line();
-    let env = null_mut();
-    let cwd = null_mut();
+    let env = EnvironmentBlock::with_token(token)?;
+    let mut cwd = get_current_directory();
     let proc_attributes = null_mut();
     let thread_attributes = null_mut();
     let inherit_handles = true;
@@ -224,8 +264,8 @@ fn spawn_with_current_io_streams(token: &Token) -> IoResult<()> {
             thread_attributes,
             inherit_handles as _,
             CREATE_UNICODE_ENVIRONMENT,
-            env,
-            cwd,
+            env.0,
+            cwd.as_mut_ptr(),
             &mut si,
             &mut pi,
         )
@@ -247,7 +287,7 @@ fn spawn_with_current_io_streams(token: &Token) -> IoResult<()> {
 }
 
 /// Spawn a copy of the current process with the provided token.
-/// A fresh console is allocated and hidden (not through choice!)
+/// A fresh console is allocated (not through choice!)
 /// and a set of pipes established between the current process
 /// and the new child that will pass through the associated
 /// stdio streams.
@@ -256,13 +296,7 @@ fn spawn_with_current_io_streams(token: &Token) -> IoResult<()> {
 fn spawn_with_piped_streams(token: &Token) -> IoResult<()> {
     let mut si: STARTUPINFOW = unsafe { std::mem::zeroed() };
     si.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
-    // CreateProcessWithTokenW forces the use of a new console
-    // window for the child process, even if we were to pass
-    // down console handles from the current process, so we
-    // have no choice but to proxy pipes between our parent
-    // and the child.
-    si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
-    si.wShowWindow = SW_HIDE as _;
+    si.dwFlags = STARTF_USESTDHANDLES;
 
     let stdin_pipe = PipePair::new()?;
     let stdout_pipe = PipePair::new()?;
@@ -279,8 +313,8 @@ fn spawn_with_piped_streams(token: &Token) -> IoResult<()> {
     let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
     let mut exe_path = get_module_file_name();
     let mut command_line = get_command_line();
-    let env = null_mut();
-    let cwd = null_mut();
+    let env = EnvironmentBlock::with_token(token)?;
+    let mut cwd = get_current_directory();
     let logon_flags = 0;
 
     let res = unsafe {
@@ -296,8 +330,8 @@ fn spawn_with_piped_streams(token: &Token) -> IoResult<()> {
             CREATE_DEFAULT_ERROR_MODE|
             CREATE_NEW_CONSOLE|
             CREATE_NEW_PROCESS_GROUP,
-            env,
-            cwd,
+            env.0,
+            cwd.as_mut_ptr(),
             &mut si,
             &mut pi,
         )

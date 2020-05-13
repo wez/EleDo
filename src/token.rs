@@ -32,7 +32,9 @@ pub enum PrivilegeLevel {
     /// an unusual way that we don't know how to guarantee
     /// that we can/should reduce privilege or do so successfully.
     NotPrivileged,
-    /// The token is an elevated token produced via runas/UAC
+    /// The token is an elevated token produced via runas/UAC.
+    /// It may be a different administrative user than the
+    /// interactive desktop user!
     Elevated,
     /// The token isn't an elevated token but it does have
     /// high integrity privileges, such as those produced
