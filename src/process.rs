@@ -10,6 +10,10 @@ use winapi::um::winnt::HANDLE;
 
 /// An owning wrapper around handles that represent processes
 pub struct Process(HANDLE);
+/// The compiler thinks it isn't send because HANDLE is a pointer
+/// type.  We happen to know that moving the handle between threads
+/// is totally fine, hence this impl.
+unsafe impl Send for Process {}
 
 impl Drop for Process {
     fn drop(&mut self) {

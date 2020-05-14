@@ -4,21 +4,29 @@ use crate::win32_error_with_context;
 use std::io::{Error as IoError, Result as IoResult};
 use std::ptr::null_mut;
 use winapi::shared::minwindef::{BOOL, DWORD};
-use winapi::shared::winerror::ERROR_INSUFFICIENT_BUFFER;
+use winapi::shared::winerror::{ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS};
+use winapi::um::accctrl::{
+    EXPLICIT_ACCESSW, NO_INHERITANCE, NO_MULTIPLE_TRUSTEE, SET_ACCESS, TRUSTEE_IS_SID,
+    TRUSTEE_IS_USER, TRUSTEE_W,
+};
+use winapi::um::aclapi::SetEntriesInAclW;
 use winapi::um::errhandlingapi::GetLastError;
 use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
+use winapi::um::minwinbase::LPTR;
 use winapi::um::processthreadsapi::{GetCurrentProcess, OpenProcessToken};
 use winapi::um::securitybaseapi::{
     CheckTokenMembership, DuplicateTokenEx, GetTokenInformation, ImpersonateLoggedOnUser,
-    SetTokenInformation,
+    InitializeSecurityDescriptor, SetSecurityDescriptorDacl, SetTokenInformation,
 };
+use winapi::um::winbase::{LocalAlloc, LocalFree};
 use winapi::um::winnt::{
     SecurityImpersonation, TokenElevationType, TokenElevationTypeFull, TokenImpersonation,
-    TokenIntegrityLevel, TokenPrimary, WinBuiltinAdministratorsSid, WinHighLabelSid,
-    WinMediumLabelSid, HANDLE, PROCESS_QUERY_INFORMATION, SE_GROUP_INTEGRITY, SID,
-    SID_AND_ATTRIBUTES, TOKEN_ADJUST_DEFAULT, TOKEN_ADJUST_SESSIONID, TOKEN_ASSIGN_PRIMARY,
-    TOKEN_DUPLICATE, TOKEN_ELEVATION_TYPE, TOKEN_IMPERSONATE, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
-    TOKEN_TYPE,
+    TokenIntegrityLevel, TokenPrimary, TokenUser, WinBuiltinAdministratorsSid, WinHighLabelSid,
+    WinMediumLabelSid, GENERIC_READ, GENERIC_WRITE, HANDLE, PACL, PROCESS_QUERY_INFORMATION,
+    PSECURITY_DESCRIPTOR, SECURITY_DESCRIPTOR_MIN_LENGTH, SECURITY_DESCRIPTOR_REVISION,
+    SE_GROUP_INTEGRITY, SID, SID_AND_ATTRIBUTES, TOKEN_ADJUST_DEFAULT, TOKEN_ADJUST_SESSIONID,
+    TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_ELEVATION_TYPE, TOKEN_IMPERSONATE,
+    TOKEN_MANDATORY_LABEL, TOKEN_QUERY, TOKEN_TYPE,
 };
 use winapi::um::winsafer::{
     SaferCloseLevel, SaferComputeTokenFromLevel, SaferCreateLevel, SAFER_LEVELID_NORMALUSER,
@@ -96,6 +104,15 @@ impl Drop for Token {
     }
 }
 
+pub(crate) struct SecurityDescriptor(pub PSECURITY_DESCRIPTOR);
+impl Drop for SecurityDescriptor {
+    fn drop(&mut self) {
+        unsafe {
+            LocalFree(self.0);
+        }
+    }
+}
+
 impl Token {
     /// Obtain a handle to the primary token for this process
     pub fn with_current_process() -> IoResult<Self> {
@@ -115,6 +132,52 @@ impl Token {
         } else {
             Ok(Self { token })
         }
+    }
+
+    pub(crate) fn create_security_descriptor(&self) -> IoResult<SecurityDescriptor> {
+        let user = self.user()?;
+
+        let mut ea = EXPLICIT_ACCESSW {
+            grfAccessPermissions: GENERIC_READ | GENERIC_WRITE,
+            grfAccessMode: SET_ACCESS,
+            grfInheritance: NO_INHERITANCE,
+            Trustee: TRUSTEE_W {
+                TrusteeForm: TRUSTEE_IS_SID,
+                TrusteeType: TRUSTEE_IS_USER,
+                MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
+                ptstrName: user.sid() as *mut _,
+                pMultipleTrustee: null_mut(),
+            },
+        };
+
+        let mut acl: PACL = null_mut();
+        let res = unsafe { SetEntriesInAclW(1, &mut ea, null_mut(), &mut acl) };
+        if res != ERROR_SUCCESS {
+            return Err(win32_error_with_context(
+                "SetEntriesInAcl",
+                IoError::last_os_error(),
+            ));
+        }
+
+        let sd = SecurityDescriptor(unsafe { LocalAlloc(LPTR, SECURITY_DESCRIPTOR_MIN_LENGTH) });
+        let res = unsafe { InitializeSecurityDescriptor(sd.0, SECURITY_DESCRIPTOR_REVISION) };
+        if res == 0 {
+            return Err(win32_error_with_context(
+                "InitializeSecurityDescriptor",
+                IoError::last_os_error(),
+            ));
+        }
+
+        let dacl_present = true as _;
+        let default_dacl = false as _;
+        let res = unsafe { SetSecurityDescriptorDacl(sd.0, dacl_present, acl, default_dacl) };
+        if res == 0 {
+            return Err(win32_error_with_context(
+                "SetSecurityDescriptorDacl",
+                IoError::last_os_error(),
+            ));
+        }
+        Ok(sd)
     }
 
     /// Obtain the token from the shell process as a primary token.
@@ -285,6 +348,50 @@ impl Token {
     fn check_administrators_membership(&self) -> IoResult<bool> {
         let admins = WellKnownSid::with_well_known(WinBuiltinAdministratorsSid)?;
         self.check_membership(&admins)
+    }
+
+    /// Retrieve the user SID and attributes from the token.
+    /// This is encoded in the same way as TokenIntegrityLevel,
+    /// hence the return type.
+    /// This method is used to obtain the SID in order to
+    /// construct a DACL for a named pipe.
+    fn user(&self) -> IoResult<TokenIntegrityLevel> {
+        let mut size: DWORD = 0;
+        let err;
+
+        unsafe {
+            GetTokenInformation(self.token, TokenUser, null_mut(), 0, &mut size);
+            err = GetLastError();
+        };
+
+        // The call should have failed and told us we need more space
+        if err != ERROR_INSUFFICIENT_BUFFER {
+            return Err(win32_error_with_context(
+                "GetTokenInformation TokenUser unexpected failure",
+                IoError::last_os_error(),
+            ));
+        }
+
+        // Allocate and zero out the storage
+        let mut data = vec![0u8; size as usize];
+
+        unsafe {
+            if GetTokenInformation(
+                self.token,
+                TokenUser,
+                data.as_mut_ptr() as *mut _,
+                size,
+                &mut size,
+            ) == 0
+            {
+                return Err(win32_error_with_context(
+                    "GetTokenInformation TokenUser",
+                    IoError::last_os_error(),
+                ));
+            }
+        };
+
+        Ok(TokenIntegrityLevel { data })
     }
 
     /// Retrieve the integrity level label of the process.

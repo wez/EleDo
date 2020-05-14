@@ -24,7 +24,14 @@ path = "bin/ptybridge.rs"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+bincode = "1.2"
+leb128 = "0.2"
+rand = "0.7"
+serde = {version="1.0", features = ["derive"]}
+shared_library = "0.1"
 winapi = { version = "0.3", features = [
+  "accctrl",
+  "aclapi",
   "errhandlingapi",
   "fileapi",
   "handleapi",

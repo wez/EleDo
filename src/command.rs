@@ -1,24 +1,26 @@
 use crate::pipe::*;
 use crate::process::Process;
-use crate::{win32_error_with_context, Token};
+use crate::{os_str_to_null_terminated_vec, win32_error_with_context, Token};
+use serde::*;
 use std::convert::TryInto;
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 use std::io::{Error as IoError, Result as IoResult};
-use std::os::windows::ffi::OsStrExt;
 use std::os::windows::ffi::OsStringExt;
 use std::path::PathBuf;
 use std::ptr::null_mut;
 use winapi::shared::minwindef::{BOOL, DWORD, LPVOID};
 use winapi::um::handleapi::CloseHandle;
 use winapi::um::processenv::{GetCommandLineW, GetStdHandle};
-use winapi::um::processthreadsapi::{CreateProcessAsUserW, PROCESS_INFORMATION, STARTUPINFOW};
+use winapi::um::processthreadsapi::{
+    CreateProcessAsUserW, CreateProcessW, PROCESS_INFORMATION, STARTUPINFOW,
+};
 use winapi::um::userenv::{CreateEnvironmentBlock, DestroyEnvironmentBlock};
 use winapi::um::winbase::{
     lstrlenW, CREATE_DEFAULT_ERROR_MODE, CREATE_NEW_CONSOLE, CREATE_NEW_PROCESS_GROUP,
     CREATE_UNICODE_ENVIRONMENT, STARTF_USESTDHANDLES, STD_ERROR_HANDLE, STD_INPUT_HANDLE,
     STD_OUTPUT_HANDLE,
 };
-use winapi::um::winnt::{LPCWSTR, LPWSTR, HANDLE};
+use winapi::um::winnt::{HANDLE, LPCWSTR, LPWSTR};
 
 extern "system" {
     /// This is missing from the currently available versions of the winapi crate.
@@ -126,10 +128,6 @@ impl ProcInfo {
     }
 }
 
-fn os_str_to_null_terminated_vec(s: &OsStr) -> Vec<u16> {
-    s.encode_wide().chain(std::iter::once(0)).collect()
-}
-
 /// Returns the command line string in a mutable buffer.
 /// We can't simply pass GetCommandLineW to the process spawning functions
 /// as they do modify the text!
@@ -145,13 +143,17 @@ fn get_command_line() -> Vec<u16> {
     res
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct Command {
     executable: Option<PathBuf>,
     cmdline: Option<OsString>,
     env: Vec<u16>,
     cwd: PathBuf,
+    #[serde(skip)]
     stdin: Option<PipeHandle>,
+    #[serde(skip)]
     stdout: Option<PipeHandle>,
+    #[serde(skip)]
     stderr: Option<PipeHandle>,
 }
 
@@ -225,6 +227,61 @@ impl Command {
         }
 
         si
+    }
+
+    pub fn spawn(&mut self) -> IoResult<Process> {
+        let mut si = self.make_startup_info();
+        let mut pi = ProcInfo::new();
+        let mut exe = os_str_to_null_terminated_vec(
+            self.executable
+                .as_ref()
+                .ok_or_else(|| {
+                    IoError::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "no executable has been assigned in call to spawn_as_user",
+                    )
+                })?
+                .as_os_str(),
+        );
+        let mut command_line = os_str_to_null_terminated_vec(
+            self.cmdline
+                .as_ref()
+                .ok_or_else(|| {
+                    IoError::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "no command line has been assigned in call to spawn_as_user",
+                    )
+                })?
+                .as_os_str(),
+        );
+        let mut cwd = os_str_to_null_terminated_vec(self.cwd.as_os_str());
+
+        let proc_attributes = null_mut();
+        let thread_attributes = null_mut();
+        let inherit_handles = true;
+
+        let res = unsafe {
+            CreateProcessW(
+                exe.as_mut_ptr(),
+                command_line.as_mut_ptr(),
+                proc_attributes,
+                thread_attributes,
+                inherit_handles as _,
+                CREATE_UNICODE_ENVIRONMENT,
+                self.env.as_mut_ptr() as *mut _,
+                cwd.as_mut_ptr(),
+                &mut si,
+                &mut pi.0,
+            )
+        };
+        if res != 1 {
+            Err(win32_error_with_context(
+                "CreateProcessAsUserW",
+                IoError::last_os_error(),
+            ))
+        } else {
+            Ok(pi.process().unwrap())
+        }
     }
 
     pub fn spawn_as_user(&mut self, token: &Token) -> IoResult<Process> {
