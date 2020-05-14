@@ -1,9 +1,26 @@
 use deelevate::{BridgeServer, Command, PrivilegeLevel, Token};
+use pathsearch::find_executable_in_path;
 use std::convert::TryInto;
+use std::ffi::{OsStr, OsString};
 
 fn main() -> std::io::Result<()> {
     let token = Token::with_current_process()?;
     let level = token.privilege_level()?;
+
+    let mut argv: Vec<OsString> = std::env::args_os().skip(1).collect();
+    if argv.is_empty() {
+        eprintln!("USAGE: normdo COMMAND [ARGS]...");
+        eprintln!("No command or arguments were specified");
+        std::process::exit(1);
+    }
+
+    argv[0] = match find_executable_in_path(&argv[0]) {
+        Some(path) => path.into(),
+        None => {
+            eprintln!("Unable to find {:?} in path", argv[0]);
+            std::process::exit(1);
+        }
+    };
 
     let target_token = match level {
         PrivilegeLevel::NotPrivileged | PrivilegeLevel::HighIntegrityAdmin => {
@@ -23,8 +40,10 @@ fn main() -> std::io::Result<()> {
 
     let pipe_path = server.start(&target_token)?;
     let mut bridge_cmd = Command::with_environment_for_token(&target_token)?;
-    bridge_cmd.set_cmdline(format!("{} {}", bridge_path.display(), pipe_path).into());
-    bridge_cmd.set_executable(bridge_path);
+    bridge_cmd.set_executable_and_command_line(
+        bridge_path.clone(),
+        format!("{} {}", bridge_path.display(), pipe_path).into(),
+    );
 
     let _bridge_proc = match level {
         PrivilegeLevel::Elevated => bridge_cmd.spawn_with_token(&target_token)?,
@@ -34,8 +53,8 @@ fn main() -> std::io::Result<()> {
     };
 
     let mut command = Command::with_environment_for_token(&target_token)?;
-    command.set_executable("C:\\Windows\\System32\\whoami.exe".into());
-    command.set_cmdline("whoami /groups".into());
+    let argv: Vec<&OsStr> = argv.iter().map(|s| s.as_os_str()).collect();
+    command.set_argv(&argv);
     server.set_command(command);
 
     let exit_code = server.run()?;

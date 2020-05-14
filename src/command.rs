@@ -3,9 +3,9 @@ use crate::process::Process;
 use crate::{os_str_to_null_terminated_vec, win32_error_with_context, Token};
 use serde::*;
 use std::convert::TryInto;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::io::{Error as IoError, Result as IoResult};
-use std::os::windows::ffi::OsStringExt;
+use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::PathBuf;
 use std::ptr::null_mut;
 use winapi::shared::minwindef::{BOOL, DWORD, LPVOID};
@@ -179,12 +179,23 @@ impl Command {
         Ok(())
     }
 
-    pub fn set_executable(&mut self, executable: PathBuf) {
+    pub fn set_executable_and_command_line(&mut self, executable: PathBuf, cmdline: OsString) {
         self.executable.replace(executable);
+        self.cmdline.replace(cmdline);
     }
 
-    pub fn set_cmdline(&mut self, cmdline: OsString) {
-        self.cmdline.replace(cmdline);
+    pub fn set_argv(&mut self, argv: &[&OsStr]) {
+        self.executable.replace(argv[0].into());
+
+        let mut cmdline = Vec::<u16>::new();
+        for arg in argv {
+            if !cmdline.is_empty() {
+                cmdline.push(' ' as u16);
+            }
+            append_quoted(arg, &mut cmdline);
+        }
+
+        self.cmdline.replace(OsString::from_wide(&cmdline));
     }
 
     pub fn set_stdin(&mut self, p: PipeHandle) -> IoResult<()> {
@@ -397,4 +408,52 @@ impl Command {
             Ok(pi.process().unwrap())
         }
     }
+}
+
+// Borrowed from https://github.com/wez/wezterm/blob/65707aba56f940f8c370f0465f0f3f2a6303a9cc/pty/src/cmdbuilder.rs#L313
+// and thus from https://github.com/hniksic/rust-subprocess/blob/873dfed165173e52907beb87118b2c0c05d8b8a1/src/popen.rs#L1117
+// which in turn was translated from ArgvQuote at http://tinyurl.com/zmgtnls
+fn append_quoted(arg: &OsStr, cmdline: &mut Vec<u16>) {
+    if !arg.is_empty()
+        && !arg.encode_wide().any(|c| {
+            c == ' ' as u16
+                || c == '\t' as u16
+                || c == '\n' as u16
+                || c == '\x0b' as u16
+                || c == '\"' as u16
+        })
+    {
+        cmdline.extend(arg.encode_wide());
+        return;
+    }
+    cmdline.push('"' as u16);
+
+    let arg: Vec<_> = arg.encode_wide().collect();
+    let mut i = 0;
+    while i < arg.len() {
+        let mut num_backslashes = 0;
+        while i < arg.len() && arg[i] == '\\' as u16 {
+            i += 1;
+            num_backslashes += 1;
+        }
+
+        if i == arg.len() {
+            for _ in 0..num_backslashes * 2 {
+                cmdline.push('\\' as u16);
+            }
+            break;
+        } else if arg[i] == b'"' as u16 {
+            for _ in 0..num_backslashes * 2 + 1 {
+                cmdline.push('\\' as u16);
+            }
+            cmdline.push(arg[i]);
+        } else {
+            for _ in 0..num_backslashes {
+                cmdline.push('\\' as u16);
+            }
+            cmdline.push(arg[i]);
+        }
+        i += 1;
+    }
+    cmdline.push('"' as u16);
 }

@@ -24,6 +24,7 @@ path = "bin/ptybridge.rs"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+pathsearch = "0.2"
 bincode = "1.2"
 leb128 = "0.2"
 rand = "0.7"
