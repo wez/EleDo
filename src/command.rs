@@ -17,10 +17,11 @@ use winapi::um::processthreadsapi::{
 use winapi::um::userenv::{CreateEnvironmentBlock, DestroyEnvironmentBlock};
 use winapi::um::winbase::{
     lstrlenW, CREATE_DEFAULT_ERROR_MODE, CREATE_NEW_CONSOLE, CREATE_NEW_PROCESS_GROUP,
-    CREATE_UNICODE_ENVIRONMENT, STARTF_USESTDHANDLES, STD_ERROR_HANDLE, STD_INPUT_HANDLE,
-    STD_OUTPUT_HANDLE,
+    CREATE_UNICODE_ENVIRONMENT, STARTF_USESHOWWINDOW, STARTF_USESTDHANDLES, STD_ERROR_HANDLE,
+    STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
 };
 use winapi::um::winnt::{HANDLE, LPCWSTR, LPWSTR};
+use winapi::um::winuser::SW_HIDE;
 
 extern "system" {
     /// This is missing from the currently available versions of the winapi crate.
@@ -149,6 +150,7 @@ pub struct Command {
     cmdline: Option<OsString>,
     env: Vec<u16>,
     cwd: PathBuf,
+    hide_window: bool,
     #[serde(skip)]
     stdin: Option<PipeHandle>,
     #[serde(skip)]
@@ -169,6 +171,7 @@ impl Command {
             stdin: None,
             stdout: None,
             stderr: None,
+            hide_window: false,
         })
     }
 
@@ -177,6 +180,10 @@ impl Command {
         self.cmdline.replace(OsString::from_wide(&cmdline));
         self.executable.replace(std::env::current_exe()?);
         Ok(())
+    }
+
+    pub fn hide_window(&mut self) {
+        self.hide_window = true;
     }
 
     pub fn set_executable_and_command_line(&mut self, executable: PathBuf, cmdline: OsString) {
@@ -220,6 +227,11 @@ impl Command {
         let mut si: STARTUPINFOW = unsafe { std::mem::zeroed() };
         si.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
         si.dwFlags = STARTF_USESTDHANDLES;
+
+        if self.hide_window {
+            si.dwFlags |= STARTF_USESHOWWINDOW;
+            si.wShowWindow = SW_HIDE as _;
+        }
 
         unsafe {
             si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
@@ -353,6 +365,7 @@ impl Command {
 
     pub fn spawn_with_token(&mut self, token: &Token) -> IoResult<Process> {
         let mut si = self.make_startup_info();
+
         let mut pi = ProcInfo::new();
         let mut exe = os_str_to_null_terminated_vec(
             self.executable

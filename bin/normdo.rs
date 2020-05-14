@@ -44,6 +44,7 @@ fn main() -> std::io::Result<()> {
         bridge_path.clone(),
         format!("{} {}", bridge_path.display(), pipe_path).into(),
     );
+    bridge_cmd.hide_window();
 
     let _bridge_proc = match level {
         PrivilegeLevel::Elevated => bridge_cmd.spawn_with_token(&target_token)?,
