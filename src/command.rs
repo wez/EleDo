@@ -1,5 +1,7 @@
 use crate::pipe::*;
 use crate::process::Process;
+use crate::procthreadattr::ProcThreadAttributeList;
+use crate::psuedocon::PsuedoCon;
 use crate::{os_str_to_null_terminated_vec, win32_error_with_context, Token};
 use serde::*;
 use std::ffi::{OsStr, OsString};
@@ -19,8 +21,8 @@ use winapi::um::shellapi::ShellExecuteW;
 use winapi::um::userenv::{CreateEnvironmentBlock, DestroyEnvironmentBlock};
 use winapi::um::winbase::{
     CREATE_DEFAULT_ERROR_MODE, CREATE_NEW_CONSOLE, CREATE_NEW_PROCESS_GROUP,
-    CREATE_UNICODE_ENVIRONMENT, STARTF_USESHOWWINDOW, STARTF_USESTDHANDLES, STD_ERROR_HANDLE,
-    STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+    CREATE_UNICODE_ENVIRONMENT, EXTENDED_STARTUPINFO_PRESENT, STARTF_USESHOWWINDOW,
+    STARTF_USESTDHANDLES, STARTUPINFOEXW, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
 };
 use winapi::um::winnt::{HANDLE, LPCWSTR, LPWSTR};
 use winapi::um::winuser::{SW_HIDE, SW_SHOWNORMAL};
@@ -209,7 +211,7 @@ impl Command {
     fn make_startup_info(&self) -> STARTUPINFOW {
         let mut si: STARTUPINFOW = unsafe { std::mem::zeroed() };
         si.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
-        si.dwFlags = STARTF_USESTDHANDLES;
+        si.dwFlags = 0;
 
         if self.hide_window {
             si.dwFlags |= STARTF_USESHOWWINDOW;
@@ -220,6 +222,10 @@ impl Command {
             si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
             si.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
             si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+        }
+
+        if self.stdin.is_some() || self.stdout.is_some() || self.stderr.is_some() {
+            si.dwFlags |= STARTF_USESTDHANDLES;
         }
 
         if let Some(pipe) = self.stdin.as_ref() {
@@ -269,6 +275,49 @@ impl Command {
                 std::io::ErrorKind::Other,
                 format!("ShellExecuteW return value {}", res),
             ))
+        }
+    }
+
+    pub fn spawn_with_pty(&mut self, psuedocon: &PsuedoCon) -> IoResult<Process> {
+        let mut si = STARTUPINFOEXW {
+            StartupInfo: self.make_startup_info(),
+            lpAttributeList: null_mut(),
+        };
+        si.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
+
+        let mut attrs = ProcThreadAttributeList::with_capacity(1)?;
+        attrs.set_pty(psuedocon.con)?;
+        si.lpAttributeList = attrs.as_mut_ptr();
+
+        let mut pi = ProcInfo::new();
+        let (mut exe, mut command_line) = self.executable_and_command_line(0);
+        let mut cwd = os_str_to_null_terminated_vec(self.cwd.as_os_str());
+
+        let proc_attributes = null_mut();
+        let thread_attributes = null_mut();
+        let inherit_handles = true;
+
+        let res = unsafe {
+            CreateProcessW(
+                exe.as_mut_ptr(),
+                command_line.as_mut_ptr(),
+                proc_attributes,
+                thread_attributes,
+                inherit_handles as _,
+                EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
+                self.env.as_mut_ptr() as *mut _,
+                cwd.as_mut_ptr(),
+                &mut si.StartupInfo,
+                &mut pi.0,
+            )
+        };
+        if res != 1 {
+            Err(win32_error_with_context(
+                "CreateProcessAsUserW",
+                IoError::last_os_error(),
+            ))
+        } else {
+            Ok(pi.process().unwrap())
         }
     }
 

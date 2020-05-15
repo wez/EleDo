@@ -23,33 +23,43 @@ fn main() -> std::io::Result<()> {
     };
 
     let target_token = match level {
-        PrivilegeLevel::NotPrivileged | PrivilegeLevel::HighIntegrityAdmin => {
-            token.as_medium_integrity_safer_token()?
-        }
+        PrivilegeLevel::NotPrivileged => token,
+        PrivilegeLevel::HighIntegrityAdmin => token.as_medium_integrity_safer_token()?,
         PrivilegeLevel::Elevated => Token::with_shell_process()?,
-    };
-
-    let mut server = BridgeServer::new();
-
-    let bridge_path = locate_pty_bridge()?;
-
-    let pipe_path = server.start(&target_token)?;
-    let mut bridge_cmd = Command::with_environment_for_token(&target_token)?;
-    bridge_cmd.set_argv(&[bridge_path.as_os_str(), OsStr::new(&pipe_path)]);
-    bridge_cmd.hide_window();
-
-    let _bridge_proc = match level {
-        PrivilegeLevel::Elevated => bridge_cmd.spawn_with_token(&target_token)?,
-        PrivilegeLevel::NotPrivileged | PrivilegeLevel::HighIntegrityAdmin => {
-            bridge_cmd.spawn_as_user(&target_token)?
-        }
     };
 
     let mut command = Command::with_environment_for_token(&target_token)?;
     let argv: Vec<&OsStr> = argv.iter().map(|s| s.as_os_str()).collect();
     command.set_argv(&argv);
-    server.set_command(command);
 
-    let exit_code = server.run()?;
+    let exit_code = match level {
+        PrivilegeLevel::NotPrivileged => {
+            // We're already normal, so just run it directly
+            let proc = command.spawn()?;
+            let _ = proc.wait_for(None);
+            proc.exit_code()?
+        }
+        PrivilegeLevel::HighIntegrityAdmin | PrivilegeLevel::Elevated => {
+            let mut server = BridgeServer::new();
+
+            let bridge_path = locate_pty_bridge()?;
+
+            let pipe_path = server.start(&target_token)?;
+            let mut bridge_cmd = Command::with_environment_for_token(&target_token)?;
+            bridge_cmd.set_argv(&[bridge_path.as_os_str(), OsStr::new(&pipe_path)]);
+            bridge_cmd.hide_window();
+
+            let _bridge_proc = match level {
+                PrivilegeLevel::Elevated => bridge_cmd.spawn_with_token(&target_token)?,
+                PrivilegeLevel::NotPrivileged | PrivilegeLevel::HighIntegrityAdmin => {
+                    bridge_cmd.spawn_as_user(&target_token)?
+                }
+            };
+
+            server.set_command(command);
+            server.run()?
+        }
+    };
+
     std::process::exit(exit_code.try_into().unwrap());
 }

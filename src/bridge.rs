@@ -1,6 +1,8 @@
 use crate::command::Command;
 use crate::pipe::*;
 use crate::process::Process;
+use crate::psuedocon::PsuedoCon;
+use crate::win32_error_with_context;
 use crate::Token;
 use serde::*;
 use std::io::{Error as IoError, Read, Result as IoResult, Write};
@@ -9,9 +11,16 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Sender};
 use std::time::Duration;
 use winapi::shared::minwindef::DWORD;
+use winapi::um::consoleapi::{ReadConsoleInputW, SetConsoleMode};
 use winapi::um::fileapi::GetFileType;
 use winapi::um::processthreadsapi::GetCurrentProcessId;
 use winapi::um::winbase::FILE_TYPE_CHAR;
+use winapi::um::wincon::{
+    GetConsoleScreenBufferInfo, CONSOLE_SCREEN_BUFFER_INFO, DISABLE_NEWLINE_AUTO_RETURN,
+    ENABLE_PROCESSED_OUTPUT, ENABLE_VIRTUAL_TERMINAL_INPUT, ENABLE_VIRTUAL_TERMINAL_PROCESSING,
+    ENABLE_WRAP_AT_EOL_OUTPUT, KEY_EVENT, MOUSE_EVENT, WINDOW_BUFFER_SIZE_EVENT,
+};
+use winapi::um::wincontypes::{COORD, INPUT_RECORD};
 
 #[derive(Serialize, Deserialize)]
 pub enum InputEvent {
@@ -22,9 +31,9 @@ pub enum InputEvent {
     AllocatePty {
         /// true if stdin in the child will be connected to the
         /// pty rather than directly to the output pipe
-        stdin: bool,
-        stdout: bool,
-        stderr: bool,
+        stdin_is_pty: bool,
+        stdout_is_pty: bool,
+        stderr_is_pty: bool,
         /// Initial width, height of the pty
         width: usize,
         height: usize,
@@ -39,7 +48,7 @@ pub enum InputEvent {
     /// Pass data to the stdin stream of the command
     Stdin(Vec<u8>),
     /// Pass data to the input stream of the pty
-    Conin(Vec<u8>),
+    Conin(char),
 }
 
 impl InputEvent {
@@ -167,9 +176,11 @@ impl BridgeClient {
 
         std::thread::spawn({
             let inputs = self.server_to_client;
+            let output_tx = output_tx.clone();
             move || {
-                let _ =
-                    Self::process_input_events(inputs, stdin_tx, stdin, stdout, stderr, proc_tx);
+                let _ = Self::process_input_events(
+                    inputs, stdin_tx, stdin, stdout, stderr, proc_tx, output_tx,
+                );
             }
         });
 
@@ -194,26 +205,111 @@ impl BridgeClient {
         stdout: PipeHandle,
         stderr: PipeHandle,
         proc_tx: Sender<Process>,
+        output_tx: Sender<OutputEvent>,
     ) -> IoResult<()> {
         let mut started = false;
 
         let mut stdin = Some(stdin);
         let mut stdout = Some(stdout);
         let mut stderr = Some(stderr);
+        let mut con = None;
+        let mut con_in = None;
+        let mut con_out_thread = None;
+        let mut all_pty = false;
+
+        struct ThreadJoiner(Option<std::thread::JoinHandle<()>>);
+        impl Drop for ThreadJoiner {
+            fn drop(&mut self) {
+                if let Some(t) = self.0.take() {
+                    let _ = t.join();
+                }
+            }
+        }
 
         loop {
             let input_event = InputEvent::next(&mut pipe)?;
             match input_event {
-                InputEvent::AllocatePty { .. } => unimplemented!(),
-                InputEvent::ResizePty { .. } => unimplemented!(),
+                InputEvent::AllocatePty {
+                    stdin_is_pty,
+                    stdout_is_pty,
+                    stderr_is_pty,
+                    width,
+                    height,
+                    cursor_x,
+                    cursor_y,
+                } => {
+                    let mut conin_pipe = PipePair::new()?;
+                    let conout_pipe = PipePair::new()?;
+
+                    // FIXME; need to separate pty and pipe processing into two separate exes
+                    all_pty = stdin_is_pty && stdout_is_pty && stderr_is_pty;
+
+                    if !all_pty && stdin_is_pty {
+                        stdin.replace(conin_pipe.read.duplicate()?);
+                    }
+                    if !all_pty && stdout_is_pty {
+                        stdout.replace(conout_pipe.write.duplicate()?);
+                    }
+                    if !all_pty && stderr_is_pty {
+                        stderr.replace(conout_pipe.write.duplicate()?);
+                    }
+
+                    con.replace(PsuedoCon::new(
+                        COORD {
+                            X: width as i16,
+                            Y: height as i16,
+                        },
+                        conin_pipe.read,
+                        conout_pipe.write,
+                    )?);
+
+                    // set initial cursor position.  Not sure if this is effective.
+                    write!(conin_pipe.write, "\x1b[{};{}H", cursor_y + 1, cursor_x + 1)?;
+
+                    con_in.replace(conin_pipe.write);
+
+                    con_out_thread.replace(ThreadJoiner(Some(std::thread::spawn({
+                        let mut out = conout_pipe.read;
+                        let tx = output_tx.clone();
+                        move || {
+                            let mut buf = [0u8; 4096];
+                            while let Ok(len) = out.read(&mut buf) {
+                                if len == 0 {
+                                    break;
+                                }
+                                if !tx.send(OutputEvent::Conout(buf[0..len].to_vec())).is_ok() {
+                                    break;
+                                }
+                            }
+                        }
+                    }))));
+                }
+                InputEvent::ResizePty { width, height } => {
+                    if let Some(con) = con.as_ref() {
+                        con.resize(COORD {
+                            X: width as _,
+                            Y: height as _,
+                        })?;
+                    }
+                }
                 InputEvent::StartCommand(mut command) => {
                     assert!(!started, "we already started a command");
 
-                    command.set_stdin(stdin.take().unwrap())?;
-                    command.set_stdout(stdout.take().unwrap())?;
-                    command.set_stderr(stderr.take().unwrap())?;
+                    // FIXME: figure out mixing pipes/redirection with a pty
+                    let stdin = stdin.take();
+                    let stdout = stdout.take();
+                    let stderr = stderr.take();
+                    if !all_pty {
+                        command.set_stdin(stdin.unwrap())?;
+                        command.set_stdout(stdout.unwrap())?;
+                        command.set_stderr(stderr.unwrap())?;
+                    }
 
-                    let proc = command.spawn()?;
+                    let proc = match con.as_ref() {
+                        Some(pty) => command.spawn_with_pty(pty)?,
+                        None => command.spawn()?,
+                    };
+
                     proc_tx.send(proc).map_err(|_| {
                         std::io::Error::new(
                             std::io::ErrorKind::Other,
@@ -231,8 +327,10 @@ impl BridgeClient {
                         )
                     })?;
                 }
-                InputEvent::Conin(_) => {
-                    unimplemented!();
+                InputEvent::Conin(c) => {
+                    if let Some(con_in) = con_in.as_mut() {
+                        write!(con_in, "{}", c)?;
+                    }
                 }
             }
         }
@@ -250,10 +348,6 @@ pub struct BridgeServer {
     stdout_is_pty: bool,
     stderr_is_pty: bool,
 
-    /*
-    conin: Option<PipeHandle>,
-    conout: Option<PipeHandle>,
-    */
     command: Option<Command>,
     pipe_server_to_client: Option<PipeHandle>,
     pipe_client_to_server: Option<PipeHandle>,
@@ -298,7 +392,83 @@ impl BridgeServer {
         client_to_server.wait_for_pipe_client()?;
 
         // Send initial data to client here
-        // TODO: pty init
+
+        let con_in = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("CONIN$")
+            .ok();
+        let con_out = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("CONOUT$")
+            .ok();
+
+        if con_in.is_some() && con_out.is_some() {
+            // We are attached to a pty so we need to build a pty
+            // on the other end of the bridge.
+
+            unsafe {
+                SetConsoleMode(
+                    con_out.as_ref().unwrap().as_raw_handle() as _,
+                    ENABLE_PROCESSED_OUTPUT
+                        | ENABLE_WRAP_AT_EOL_OUTPUT
+                        | ENABLE_VIRTUAL_TERMINAL_PROCESSING
+                        | DISABLE_NEWLINE_AUTO_RETURN,
+                );
+            }
+            /*
+            unsafe {
+                SetConsoleMode(
+                    con_in.as_ref().unwrap().as_raw_handle() as _,
+                    // FIXME: this breaks cursor keys in powershell :-/
+                    ENABLE_VIRTUAL_TERMINAL_INPUT,
+                );
+            }
+            */
+
+            let mut console_info: CONSOLE_SCREEN_BUFFER_INFO = unsafe { std::mem::zeroed() };
+            let res = unsafe {
+                GetConsoleScreenBufferInfo(
+                    con_out.as_ref().unwrap().as_raw_handle() as _,
+                    &mut console_info,
+                )
+            };
+
+            if res == 0 {
+                return Err(win32_error_with_context(
+                    "GetConsoleScreenBufferInfo",
+                    IoError::last_os_error(),
+                ));
+            }
+
+            // The console info describes the buffer dimensions.
+            // We need to do a little bit of math to obtain the viewport dimensions!
+            let width = console_info
+                .srWindow
+                .Right
+                .saturating_sub(console_info.srWindow.Left) as usize
+                + 1;
+            let height = console_info
+                .srWindow
+                .Bottom
+                .saturating_sub(console_info.srWindow.Top) as usize
+                + 1;
+
+            let cursor_x = console_info.dwCursorPosition.X as usize;
+            let cursor_y = console_info.dwCursorPosition.Y as usize;
+
+            InputEvent::AllocatePty {
+                stdin_is_pty: self.stdin_is_pty,
+                stdout_is_pty: self.stdout_is_pty,
+                stderr_is_pty: self.stderr_is_pty,
+                width,
+                height,
+                cursor_x,
+                cursor_y,
+            }
+            .write(&mut server_to_client)?;
+        }
 
         InputEvent::StartCommand(cmd).write(&mut server_to_client)?;
 
@@ -335,26 +505,102 @@ impl BridgeServer {
 
         // Spawn a thread for stdin to convert reads to messages
         // that are queued to the pipe writer
-        std::thread::spawn({
-            let pipe_tx = pipe_tx.clone();
-            move || {
-                let mut buf = [0u8; 4096];
-                while let Ok(len) = std::io::stdin().read(&mut buf) {
-                    if len == 0 {
-                        break;
-                    }
+        if !self.stdin_is_pty {
+            std::thread::spawn({
+                let pipe_tx = pipe_tx.clone();
+                move || {
+                    let mut buf = [0u8; 4096];
+                    while let Ok(len) = std::io::stdin().read(&mut buf) {
+                        if len == 0 {
+                            break;
+                        }
 
-                    if pipe_tx
-                        .send(InputEvent::Stdin(buf[0..len].to_vec()))
-                        .is_err()
-                    {
-                        break;
+                        if pipe_tx
+                            .send(InputEvent::Stdin(buf[0..len].to_vec()))
+                            .is_err()
+                        {
+                            break;
+                        }
                     }
                 }
-            }
-        });
+            });
+        }
 
-        // TODO: same for conin, resize events
+        if let Some(con_in) = con_in {
+            // Handle console input and relay to the other side
+            std::thread::spawn({
+                let pipe_tx = pipe_tx.clone();
+                move || -> IoResult<()> {
+                    let mut records: [INPUT_RECORD; 128] = unsafe { std::mem::zeroed() };
+
+                    unsafe {
+                        SetConsoleMode(con_in.as_raw_handle() as _, ENABLE_VIRTUAL_TERMINAL_INPUT);
+                    }
+
+                    loop {
+                        let mut num_read = 0;
+                        let res = unsafe {
+                            ReadConsoleInputW(
+                                con_in.as_raw_handle() as _,
+                                records.as_mut_ptr(),
+                                records.len() as u32,
+                                &mut num_read,
+                            )
+                        };
+                        if res == 0 {
+                            return Err(win32_error_with_context(
+                                "ReadConsoleInputW",
+                                IoError::last_os_error(),
+                            ));
+                        }
+                        for rec in &records[0..num_read as usize] {
+                            match rec.EventType {
+                                KEY_EVENT => {
+                                    let event = unsafe { rec.Event.KeyEvent() };
+                                    if event.bKeyDown != 0 {
+                                        match std::char::from_u32(*unsafe {
+                                            event.uChar.UnicodeChar()
+                                        }
+                                            as u32)
+                                        {
+                                            Some(unicode) if unicode > '\x00' => {
+                                                pipe_tx.send(InputEvent::Conin(unicode)).map_err(
+                                                    |e| {
+                                                        IoError::new(
+                                                            std::io::ErrorKind::Other,
+                                                            format!("{}", e),
+                                                        )
+                                                    },
+                                                )?;
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                                MOUSE_EVENT => {
+                                    // TODO: propagate mouse!
+                                }
+                                WINDOW_BUFFER_SIZE_EVENT => {
+                                    let event = unsafe { rec.Event.WindowBufferSizeEvent() };
+                                    pipe_tx
+                                        .send(InputEvent::ResizePty {
+                                            width: event.dwSize.X as usize,
+                                            height: event.dwSize.Y as usize,
+                                        })
+                                        .map_err(|e| {
+                                            IoError::new(
+                                                std::io::ErrorKind::Other,
+                                                format!("{}", e),
+                                            )
+                                        })?;
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            });
+        }
 
         let (stdout_tx, stdout_rx) = channel::<Vec<u8>>();
         let stdout_thread = std::thread::spawn(move || {
@@ -365,6 +611,25 @@ impl BridgeServer {
             }
         });
 
+        let conout_tx;
+        let conout_thread;
+
+        if let Some(mut con_out) = con_out {
+            let (tx, rx) = channel::<Vec<u8>>();
+            conout_thread = Some(std::thread::spawn(move || {
+                while let Ok(buf) = rx.recv() {
+                    if con_out.write_all(&buf).is_err() {
+                        break;
+                    }
+                }
+            }));
+
+            conout_tx = Some(tx);
+        } else {
+            conout_tx = None;
+            conout_thread = None;
+        }
+
         let (stderr_tx, stderr_rx) = channel::<Vec<u8>>();
         let stderr_thread = std::thread::spawn(move || {
             while let Ok(buf) = stderr_rx.recv() {
@@ -374,31 +639,39 @@ impl BridgeServer {
             }
         });
 
-        // TODO: If conin is a tty, spawn a thread to read it and pass
-        // data to pipe writer.
-
-        let result =
-            move || -> IoResult<()> {
-                loop {
-                    let output_event = OutputEvent::next(&mut client_to_server)?;
-                    match output_event {
-                        OutputEvent::Started => unreachable!(),
-                        OutputEvent::Conout(data) | OutputEvent::Stdout(data) => stdout_tx
+        let result = move || -> IoResult<()> {
+            loop {
+                let output_event = OutputEvent::next(&mut client_to_server)?;
+                match output_event {
+                    OutputEvent::Started => unreachable!(),
+                    OutputEvent::Conout(data) => match conout_tx.as_ref() {
+                        Some(tx) => tx
                             .send(data)
                             .map_err(|e| IoError::new(std::io::ErrorKind::Other, e))?,
-                        OutputEvent::Stderr(data) => stderr_tx
-                            .send(data)
-                            .map_err(|e| IoError::new(std::io::ErrorKind::Other, e))?,
-                        OutputEvent::Completed(exit_code) => exit_code_tx
-                            .send(exit_code)
-                            .map_err(|e| IoError::new(std::io::ErrorKind::Other, e))?,
-                    }
+                        None => Err(IoError::new(
+                            std::io::ErrorKind::Other,
+                            "Conout when there is no conout!",
+                        ))?,
+                    },
+                    OutputEvent::Stdout(data) => stdout_tx
+                        .send(data)
+                        .map_err(|e| IoError::new(std::io::ErrorKind::Other, e))?,
+                    OutputEvent::Stderr(data) => stderr_tx
+                        .send(data)
+                        .map_err(|e| IoError::new(std::io::ErrorKind::Other, e))?,
+                    OutputEvent::Completed(exit_code) => exit_code_tx
+                        .send(exit_code)
+                        .map_err(|e| IoError::new(std::io::ErrorKind::Other, e))?,
                 }
-            }();
+            }
+        }();
 
         // Ensure that we flush any pending output!
         let _ = stdout_thread.join();
         let _ = stderr_thread.join();
+        if let Some(conout_thread) = conout_thread {
+            let _ = conout_thread.join();
+        }
 
         result
     }
@@ -427,17 +700,18 @@ impl BridgeServer {
         // Spawn a thread to do blocking message reads and dispatch
         // to output streams.
         std::thread::spawn(move || {
-            let _ = self.reader(started_tx, exit_code_tx);
+            if let Err(e) = self.reader(started_tx, exit_code_tx) {
+                if e.kind() != std::io::ErrorKind::BrokenPipe {
+                    eprintln!("BridgeServer error: {:?}", e);
+                }
+            }
             let _ = finished_tx.send(());
         });
 
         // Wait for the process to start up
-        started_rx.recv_timeout(Duration::new(10, 0)).map_err(|_| {
-            IoError::new(
-                std::io::ErrorKind::TimedOut,
-                "pty bridge did not start in a timely fashion",
-            )
-        })?;
+        started_rx
+            .recv_timeout(Duration::new(10, 0))
+            .map_err(|e| IoError::new(std::io::ErrorKind::Other, e))?;
 
         // Wait for buffers to flush
         finished_rx.recv().map_err(|_| {

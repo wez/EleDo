@@ -6,6 +6,8 @@ mod bridge;
 mod command;
 mod pipe;
 mod process;
+mod procthreadattr;
+mod psuedocon;
 mod sid;
 mod spawn;
 mod token;
