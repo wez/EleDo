@@ -5,7 +5,7 @@ use crate::Token;
 use serde::*;
 use std::io::{Error as IoError, Read, Result as IoResult, Write};
 use std::os::windows::prelude::*;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Sender};
 use std::time::Duration;
 use winapi::shared::minwindef::DWORD;
@@ -468,4 +468,30 @@ fn read_message<R: AsRawHandle + Read>(r: &mut R) -> IoResult<Vec<u8>> {
     let mut buf = vec![0u8; size];
     r.read_exact(&mut buf)?;
     Ok(buf)
+}
+
+pub fn locate_pty_bridge() -> IoResult<PathBuf> {
+    let bridge_name = "ptybridge.exe";
+    let bridge_path = std::env::current_exe()?
+        .parent()
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "current exe has no containing dir while locating pty bridge!?",
+            )
+        })?
+        .join(bridge_name);
+    if bridge_path.exists() {
+        Ok(bridge_path)
+    } else {
+        pathsearch::find_executable_in_path(bridge_name).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!(
+                    "{} not found alongside executable or in the path",
+                    bridge_name
+                ),
+            )
+        })
+    }
 }

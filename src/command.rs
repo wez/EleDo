@@ -2,24 +2,23 @@ use crate::pipe::*;
 use crate::process::Process;
 use crate::{os_str_to_null_terminated_vec, win32_error_with_context, Token};
 use serde::*;
-use std::convert::TryInto;
 use std::ffi::{OsStr, OsString};
 use std::io::{Error as IoError, Result as IoResult};
-use std::os::windows::ffi::{OsStrExt, OsStringExt};
+use std::os::windows::ffi::OsStrExt;
 use std::path::PathBuf;
 use std::ptr::null_mut;
 use winapi::shared::minwindef::{BOOL, DWORD, LPVOID};
 use winapi::um::combaseapi::CoInitializeEx;
 use winapi::um::handleapi::CloseHandle;
 use winapi::um::objbase::{COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE};
-use winapi::um::processenv::{GetCommandLineW, GetStdHandle};
+use winapi::um::processenv::GetStdHandle;
 use winapi::um::processthreadsapi::{
     CreateProcessAsUserW, CreateProcessW, PROCESS_INFORMATION, STARTUPINFOW,
 };
 use winapi::um::shellapi::ShellExecuteW;
 use winapi::um::userenv::{CreateEnvironmentBlock, DestroyEnvironmentBlock};
 use winapi::um::winbase::{
-    lstrlenW, CREATE_DEFAULT_ERROR_MODE, CREATE_NEW_CONSOLE, CREATE_NEW_PROCESS_GROUP,
+    CREATE_DEFAULT_ERROR_MODE, CREATE_NEW_CONSOLE, CREATE_NEW_PROCESS_GROUP,
     CREATE_UNICODE_ENVIRONMENT, STARTF_USESHOWWINDOW, STARTF_USESTDHANDLES, STD_ERROR_HANDLE,
     STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
 };
@@ -130,21 +129,6 @@ impl ProcInfo {
             Some(proc)
         }
     }
-}
-
-/// Returns the command line string in a mutable buffer.
-/// We can't simply pass GetCommandLineW to the process spawning functions
-/// as they do modify the text!
-fn get_command_line() -> Vec<u16> {
-    let mut res = vec![];
-    let slice = unsafe {
-        let command_line = GetCommandLineW();
-        let len = lstrlenW(command_line);
-
-        std::slice::from_raw_parts(command_line, len.try_into().unwrap())
-    };
-    res.extend_from_slice(slice);
-    res
 }
 
 #[derive(Serialize, Deserialize)]

@@ -10,8 +10,7 @@ mod sid;
 mod spawn;
 mod token;
 
-pub use bridge::BridgeClient;
-pub use bridge::BridgeServer;
+pub use bridge::{locate_pty_bridge, BridgeClient, BridgeServer};
 pub use command::Command;
 pub use spawn::spawn_with_reduced_privileges;
 pub use token::PrivilegeLevel;

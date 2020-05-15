@@ -1,4 +1,4 @@
-use deelevate::{BridgeServer, Command, PrivilegeLevel, Token};
+use deelevate::{locate_pty_bridge, BridgeServer, Command, PrivilegeLevel, Token};
 use pathsearch::find_executable_in_path;
 use std::convert::TryInto;
 use std::ffi::{OsStr, OsString};
@@ -31,12 +31,7 @@ fn main() -> std::io::Result<()> {
 
     let mut server = BridgeServer::new();
 
-    let bridge_path = std::env::current_exe()?
-        .parent()
-        .ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::Other, "failed to locate ptybridge.exe")
-        })?
-        .join("ptybridge.exe");
+    let bridge_path = locate_pty_bridge()?;
 
     let pipe_path = server.start(&target_token)?;
     let mut bridge_cmd = Command::with_environment_for_token(&target_token)?;
