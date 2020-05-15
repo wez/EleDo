@@ -56,7 +56,7 @@ fn main() -> std::io::Result<()> {
             ]);
             bridge_cmd.hide_window();
 
-            bridge_cmd.shell_execute("runas")?;
+            let _proc = bridge_cmd.shell_execute("runas")?;
 
             server.set_command(command);
             server.run()?

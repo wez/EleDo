@@ -17,7 +17,7 @@ use winapi::um::processenv::GetStdHandle;
 use winapi::um::processthreadsapi::{
     CreateProcessAsUserW, CreateProcessW, PROCESS_INFORMATION, STARTUPINFOW,
 };
-use winapi::um::shellapi::ShellExecuteW;
+use winapi::um::shellapi::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW};
 use winapi::um::userenv::{CreateEnvironmentBlock, DestroyEnvironmentBlock};
 use winapi::um::winbase::{
     CREATE_DEFAULT_ERROR_MODE, CREATE_NEW_CONSOLE, CREATE_NEW_PROCESS_GROUP,
@@ -241,7 +241,7 @@ impl Command {
         si
     }
 
-    pub fn shell_execute(&mut self, verb: &str) -> IoResult<()> {
+    pub fn shell_execute(&mut self, verb: &str) -> IoResult<Process> {
         unsafe {
             CoInitializeEx(
                 null_mut(),
@@ -252,29 +252,37 @@ impl Command {
         let cwd = os_str_to_null_terminated_vec(self.cwd.as_os_str());
         let verb = os_str_to_null_terminated_vec(OsStr::new(verb));
 
-        let res = unsafe {
-            ShellExecuteW(
-                null_mut(),
-                verb.as_ptr(),
-                exe.as_ptr(),
-                params.as_ptr(),
-                cwd.as_ptr(),
-                if self.hide_window {
-                    SW_HIDE
-                } else {
-                    SW_SHOWNORMAL
-                },
-            )
-        } as i32;
+        let mut info = SHELLEXECUTEINFOW {
+            cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+            fMask: SEE_MASK_NOCLOSEPROCESS,
+            hwnd: null_mut(),
+            lpVerb: verb.as_ptr(),
+            lpFile: exe.as_ptr(),
+            lpParameters: params.as_ptr(),
+            lpDirectory: cwd.as_ptr(),
+            nShow: if self.hide_window {
+                SW_HIDE
+            } else {
+                SW_SHOWNORMAL
+            },
+            hInstApp: null_mut(),
+            lpIDList: null_mut(),
+            lpClass: null_mut(),
+            hkeyClass: null_mut(),
+            hMonitor: null_mut(),
+            dwHotKey: 0,
+            hProcess: null_mut(),
+        };
 
-        // For legacy reasons ShellExecuteW has a weird return value
-        if res > 32 {
-            Ok(())
-        } else {
-            Err(IoError::new(
-                std::io::ErrorKind::Other,
-                format!("ShellExecuteW return value {}", res),
+        let res = unsafe { ShellExecuteExW(&mut info) };
+
+        if res == 0 {
+            Err(win32_error_with_context(
+                "ShellExecuteExW",
+                IoError::last_os_error(),
             ))
+        } else {
+            Ok(Process::with_handle(info.hProcess))
         }
     }
 
