@@ -1,8 +1,9 @@
 use crate::{os_str_to_null_terminated_vec, win32_error_with_context, Token};
 use std::io::{Error as IoError, Result as IoResult};
 use std::os::windows::prelude::*;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::ptr::null_mut;
+use std::sync::atomic::AtomicUsize;
 use winapi::shared::winerror::ERROR_PIPE_CONNECTED;
 use winapi::um::errhandlingapi::GetLastError;
 use winapi::um::fileapi::{CreateFileW, FlushFileBuffers, ReadFile, WriteFile, OPEN_EXISTING};
@@ -12,6 +13,7 @@ use winapi::um::handleapi::{
 use winapi::um::minwinbase::SECURITY_ATTRIBUTES;
 use winapi::um::namedpipeapi::{ConnectNamedPipe, CreateNamedPipeW, CreatePipe};
 use winapi::um::processthreadsapi::GetCurrentProcess;
+use winapi::um::processthreadsapi::GetCurrentProcessId;
 use winapi::um::winbase::*;
 use winapi::um::winnt::{DUPLICATE_SAME_ACCESS, GENERIC_READ, GENERIC_WRITE, HANDLE};
 
@@ -217,6 +219,26 @@ impl std::io::Write for PipeHandle {
         } else {
             Ok(())
         }
+    }
+}
+
+pub struct NamedPipeServer {
+    pub pipe: PipeHandle,
+    pub path: PathBuf,
+}
+
+impl NamedPipeServer {
+    pub fn for_token(token: &Token) -> IoResult<Self> {
+        static ID: AtomicUsize = AtomicUsize::new(1);
+        let path: PathBuf = format!(
+            "\\\\.\\pipe\\eledo-bridge-{:x}-{:x}-{:x}",
+            unsafe { GetCurrentProcessId() },
+            ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
+            rand::random::<u32>()
+        )
+        .into();
+        let pipe = PipeHandle::create_named_pipe_byte_mode_for_token(&path, token)?;
+        Ok(Self { pipe, path })
     }
 }
 

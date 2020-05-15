@@ -45,12 +45,14 @@ fn main() -> std::io::Result<()> {
 
             let bridge_path = locate_pty_bridge()?;
 
-            let pipe_path = server.start(&target_token)?;
+            let pipe_paths = server.start(&target_token)?;
             let mut bridge_cmd = Command::with_environment_for_token(&target_token)?;
             bridge_cmd.set_argv(&[
                 bridge_path.as_os_str(),
-                OsStr::new("--pipe-path"),
-                OsStr::new(&pipe_path),
+                OsStr::new("--server-to-client"),
+                pipe_paths.server_to_client.as_os_str(),
+                OsStr::new("--client-to-server"),
+                pipe_paths.client_to_server.as_os_str(),
             ]);
             bridge_cmd.hide_window();
 

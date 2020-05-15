@@ -7,13 +7,12 @@ use crate::Token;
 use serde::*;
 use std::io::{Error as IoError, Read, Result as IoResult, Write};
 use std::os::windows::prelude::*;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::mpsc::{channel, Sender};
 use std::time::Duration;
 use winapi::shared::minwindef::DWORD;
 use winapi::um::consoleapi::{ReadConsoleInputW, SetConsoleMode};
 use winapi::um::fileapi::GetFileType;
-use winapi::um::processthreadsapi::GetCurrentProcessId;
 use winapi::um::winbase::FILE_TYPE_CHAR;
 use winapi::um::wincon::{
     GetConsoleScreenBufferInfo, CONSOLE_SCREEN_BUFFER_INFO, DISABLE_NEWLINE_AUTO_RETURN,
@@ -96,10 +95,9 @@ pub struct BridgeClient {
 }
 
 impl BridgeClient {
-    pub fn with_pipe_name<P: AsRef<Path>>(p: P) -> IoResult<Self> {
-        let p = p.as_ref();
-        let server_to_client = PipeHandle::open_pipe(format!("{}S2C", p.display()))?;
-        let mut client_to_server = PipeHandle::open_pipe(format!("{}C2S", p.display()))?;
+    pub fn with_pipe_paths(paths: &ServerPipePaths) -> IoResult<Self> {
+        let server_to_client = PipeHandle::open_pipe(&paths.server_to_client)?;
+        let mut client_to_server = PipeHandle::open_pipe(&paths.client_to_server)?;
 
         OutputEvent::Started.write(&mut client_to_server)?;
         Ok(Self {
@@ -342,8 +340,6 @@ impl BridgeClient {
 /// bridge client connection.
 #[derive(Default)]
 pub struct BridgeServer {
-    pipe_name: String,
-
     stdin_is_pty: bool,
     stdout_is_pty: bool,
     stderr_is_pty: bool,
@@ -360,18 +356,11 @@ fn is_pty_stream<F: AsRawHandle>(f: &F) -> bool {
 
 impl BridgeServer {
     pub fn new() -> Self {
-        let pipe_name = format!(
-            "\\\\.\\pipe\\eledo-bridge-{:x}-{:x}",
-            unsafe { GetCurrentProcessId() },
-            rand::random::<u32>()
-        );
-
         let stdin_is_pty = is_pty_stream(&std::io::stdin());
         let stdout_is_pty = is_pty_stream(&std::io::stdout());
         let stderr_is_pty = is_pty_stream(&std::io::stderr());
 
         Self {
-            pipe_name,
             stdin_is_pty,
             stdout_is_pty,
             stderr_is_pty,
@@ -417,15 +406,6 @@ impl BridgeServer {
                         | DISABLE_NEWLINE_AUTO_RETURN,
                 );
             }
-            /*
-            unsafe {
-                SetConsoleMode(
-                    con_in.as_ref().unwrap().as_raw_handle() as _,
-                    // FIXME: this breaks cursor keys in powershell :-/
-                    ENABLE_VIRTUAL_TERMINAL_INPUT,
-                );
-            }
-            */
 
             let mut console_info: CONSOLE_SCREEN_BUFFER_INFO = unsafe { std::mem::zeroed() };
             let res = unsafe {
@@ -533,9 +513,11 @@ impl BridgeServer {
                 move || -> IoResult<()> {
                     let mut records: [INPUT_RECORD; 128] = unsafe { std::mem::zeroed() };
 
+                    /* FIXME: we need to restore the mode in use when we quit
                     unsafe {
                         SetConsoleMode(con_in.as_raw_handle() as _, ENABLE_VIRTUAL_TERMINAL_INPUT);
                     }
+                    */
 
                     loop {
                         let mut num_read = 0;
@@ -678,18 +660,16 @@ impl BridgeServer {
 
     /// Creates the server pipe and returns the name of the pipe
     /// so that it can be passed to the client process
-    pub fn start(&mut self, token: &Token) -> IoResult<String> {
-        self.pipe_server_to_client
-            .replace(PipeHandle::create_named_pipe_byte_mode_for_token(
-                format!("{}S2C", self.pipe_name),
-                token,
-            )?);
-        self.pipe_client_to_server
-            .replace(PipeHandle::create_named_pipe_byte_mode_for_token(
-                format!("{}C2S", self.pipe_name),
-                token,
-            )?);
-        Ok(self.pipe_name.clone())
+    pub fn start(&mut self, token: &Token) -> IoResult<ServerPipePaths> {
+        let server_to_client = NamedPipeServer::for_token(token)?;
+        let client_to_server = NamedPipeServer::for_token(token)?;
+
+        self.pipe_server_to_client.replace(server_to_client.pipe);
+        self.pipe_client_to_server.replace(client_to_server.pipe);
+        Ok(ServerPipePaths {
+            server_to_client: server_to_client.path,
+            client_to_server: client_to_server.path,
+        })
     }
 
     pub fn run(self) -> IoResult<DWORD> {
@@ -768,4 +748,8 @@ pub fn locate_pty_bridge() -> IoResult<PathBuf> {
             )
         })
     }
+}
+pub struct ServerPipePaths {
+    pub server_to_client: PathBuf,
+    pub client_to_server: PathBuf,
 }

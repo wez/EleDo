@@ -1,7 +1,7 @@
 // Don't create a new standard console window when launched from the windows GUI.
 //#![windows_subsystem = "windows"]
 
-use deelevate::BridgeClient;
+use deelevate::{BridgeClient, ServerPipePaths};
 use std::path::PathBuf;
 use structopt::*;
 
@@ -12,11 +12,18 @@ use structopt::*;
 struct Opt {
     /// Specifies the pipe path for the BridgeClient
     #[structopt(long, parse(from_os_str))]
-    pipe_path: PathBuf,
+    server_to_client: PathBuf,
+
+    #[structopt(long, parse(from_os_str))]
+    client_to_server: PathBuf,
 }
 
 fn main() -> std::io::Result<()> {
     let opt = Opt::from_args();
-    let client = BridgeClient::with_pipe_name(opt.pipe_path)?;
+    let pipe_paths = ServerPipePaths {
+        server_to_client: opt.server_to_client,
+        client_to_server: opt.client_to_server,
+    };
+    let client = BridgeClient::with_pipe_paths(&pipe_paths)?;
     client.run()
 }
