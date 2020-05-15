@@ -47,7 +47,11 @@ fn main() -> std::io::Result<()> {
 
             let pipe_path = server.start(&target_token)?;
             let mut bridge_cmd = Command::with_environment_for_token(&target_token)?;
-            bridge_cmd.set_argv(&[bridge_path.as_os_str(), OsStr::new(&pipe_path)]);
+            bridge_cmd.set_argv(&[
+                bridge_path.as_os_str(),
+                OsStr::new("--pipe-path"),
+                OsStr::new(&pipe_path),
+            ]);
             bridge_cmd.hide_window();
 
             bridge_cmd.shell_execute("runas")?;
