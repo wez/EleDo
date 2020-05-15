@@ -3,7 +3,6 @@ use crate::pipe::*;
 use crate::{PrivilegeLevel, Token};
 use std::convert::TryInto;
 use std::io::Result as IoResult;
-use winapi::um::winbase::INFINITE;
 
 /// Spawn a copy of the current process using the provided token.
 /// The existing streams are passed through to the child.
@@ -14,7 +13,7 @@ fn spawn_with_current_io_streams(token: &Token) -> IoResult<()> {
     cmd.set_command_from_current_process()?;
     let proc = cmd.spawn_as_user(token)?;
 
-    proc.wait_for(INFINITE)?;
+    proc.wait_for(None)?;
 
     let exit_code = proc.exit_code()?;
     std::process::exit(exit_code.try_into().unwrap());
@@ -59,7 +58,7 @@ fn spawn_with_piped_streams(token: &Token) -> IoResult<()> {
         let _ = std::io::copy(&mut stderr_pipe, &mut stderr.lock());
     });
 
-    proc.wait_for(INFINITE)?;
+    proc.wait_for(None)?;
 
     // Make sure we have a chance to flush output before we terminate
     let _ = stdout.join();

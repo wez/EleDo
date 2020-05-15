@@ -11,7 +11,7 @@ use std::time::Duration;
 use winapi::shared::minwindef::DWORD;
 use winapi::um::fileapi::GetFileType;
 use winapi::um::processthreadsapi::GetCurrentProcessId;
-use winapi::um::winbase::{FILE_TYPE_CHAR, INFINITE};
+use winapi::um::winbase::FILE_TYPE_CHAR;
 
 #[derive(Serialize, Deserialize)]
 pub enum InputEvent {
@@ -177,7 +177,7 @@ impl BridgeClient {
             std::io::Error::new(std::io::ErrorKind::Other, "rx proc handle from channel")
         })?;
 
-        let _ = proc.wait_for(INFINITE);
+        let _ = proc.wait_for(None);
         let exit_code = proc.exit_code().unwrap_or(1);
         let _ = output_tx.send(OutputEvent::Completed(exit_code));
 

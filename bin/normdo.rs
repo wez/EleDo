@@ -40,10 +40,7 @@ fn main() -> std::io::Result<()> {
 
     let pipe_path = server.start(&target_token)?;
     let mut bridge_cmd = Command::with_environment_for_token(&target_token)?;
-    bridge_cmd.set_executable_and_command_line(
-        bridge_path.clone(),
-        format!("{} {}", bridge_path.display(), pipe_path).into(),
-    );
+    bridge_cmd.set_argv(&[bridge_path.as_os_str(), OsStr::new(&pipe_path)]);
     bridge_cmd.hide_window();
 
     let _bridge_proc = match level {

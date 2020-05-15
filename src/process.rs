@@ -5,7 +5,7 @@ use winapi::shared::minwindef::DWORD;
 use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
 use winapi::um::processthreadsapi::{GetExitCodeProcess, OpenProcess};
 use winapi::um::synchapi::WaitForSingleObject;
-use winapi::um::winbase::WAIT_FAILED;
+use winapi::um::winbase::{INFINITE, WAIT_FAILED};
 use winapi::um::winnt::HANDLE;
 
 /// An owning wrapper around handles that represent processes
@@ -53,9 +53,9 @@ impl Process {
     }
 
     /// Wait for the specified duration (in milliseconds!) to pass.
-    /// Use INFINITE to wait forever.
-    pub fn wait_for(&self, duration: DWORD) -> IoResult<DWORD> {
-        let res = unsafe { WaitForSingleObject(self.0, duration) };
+    /// Use None to wait forever.
+    pub fn wait_for(&self, duration: Option<DWORD>) -> IoResult<DWORD> {
+        let res = unsafe { WaitForSingleObject(self.0, duration.unwrap_or(INFINITE)) };
         if res == WAIT_FAILED {
             Err(win32_error_with_context(
                 "WaitForSingleObject(process)",

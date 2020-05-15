@@ -9,11 +9,14 @@ use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::PathBuf;
 use std::ptr::null_mut;
 use winapi::shared::minwindef::{BOOL, DWORD, LPVOID};
+use winapi::um::combaseapi::CoInitializeEx;
 use winapi::um::handleapi::CloseHandle;
+use winapi::um::objbase::{COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE};
 use winapi::um::processenv::{GetCommandLineW, GetStdHandle};
 use winapi::um::processthreadsapi::{
     CreateProcessAsUserW, CreateProcessW, PROCESS_INFORMATION, STARTUPINFOW,
 };
+use winapi::um::shellapi::ShellExecuteW;
 use winapi::um::userenv::{CreateEnvironmentBlock, DestroyEnvironmentBlock};
 use winapi::um::winbase::{
     lstrlenW, CREATE_DEFAULT_ERROR_MODE, CREATE_NEW_CONSOLE, CREATE_NEW_PROCESS_GROUP,
@@ -21,7 +24,7 @@ use winapi::um::winbase::{
     STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
 };
 use winapi::um::winnt::{HANDLE, LPCWSTR, LPWSTR};
-use winapi::um::winuser::SW_HIDE;
+use winapi::um::winuser::{SW_HIDE, SW_SHOWNORMAL};
 
 extern "system" {
     /// This is missing from the currently available versions of the winapi crate.
@@ -146,8 +149,7 @@ fn get_command_line() -> Vec<u16> {
 
 #[derive(Serialize, Deserialize)]
 pub struct Command {
-    executable: Option<PathBuf>,
-    cmdline: Option<OsString>,
+    args: Vec<OsString>,
     env: Vec<u16>,
     cwd: PathBuf,
     hide_window: bool,
@@ -164,8 +166,7 @@ impl Command {
         let env = EnvironmentBlock::with_token(token)?.as_vec();
         let cwd = std::env::current_dir()?;
         Ok(Self {
-            executable: None,
-            cmdline: None,
+            args: vec![],
             env,
             cwd,
             stdin: None,
@@ -176,9 +177,7 @@ impl Command {
     }
 
     pub fn set_command_from_current_process(&mut self) -> IoResult<()> {
-        let cmdline = get_command_line();
-        self.cmdline.replace(OsString::from_wide(&cmdline));
-        self.executable.replace(std::env::current_exe()?);
+        self.args = std::env::args_os().collect();
         Ok(())
     }
 
@@ -186,23 +185,23 @@ impl Command {
         self.hide_window = true;
     }
 
-    pub fn set_executable_and_command_line(&mut self, executable: PathBuf, cmdline: OsString) {
-        self.executable.replace(executable);
-        self.cmdline.replace(cmdline);
+    pub fn set_argv(&mut self, argv: &[&OsStr]) {
+        self.args = argv.iter().map(|o| o.to_os_string()).collect();
     }
 
-    pub fn set_argv(&mut self, argv: &[&OsStr]) {
-        self.executable.replace(argv[0].into());
+    fn executable_and_command_line(&self, skip: usize) -> (Vec<u16>, Vec<u16>) {
+        let executable = os_str_to_null_terminated_vec(&self.args[0]);
 
         let mut cmdline = Vec::<u16>::new();
-        for arg in argv {
+        for arg in self.args.iter().skip(skip) {
             if !cmdline.is_empty() {
                 cmdline.push(' ' as u16);
             }
-            append_quoted(arg, &mut cmdline);
+            append_quoted(&arg, &mut cmdline);
         }
+        cmdline.push(0);
 
-        self.cmdline.replace(OsString::from_wide(&cmdline));
+        (executable, cmdline)
     }
 
     pub fn set_stdin(&mut self, p: PipeHandle) -> IoResult<()> {
@@ -252,31 +251,47 @@ impl Command {
         si
     }
 
+    pub fn shell_execute(&mut self, verb: &str) -> IoResult<()> {
+        unsafe {
+            CoInitializeEx(
+                null_mut(),
+                COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE,
+            )
+        };
+        let (exe, params) = self.executable_and_command_line(1);
+        let cwd = os_str_to_null_terminated_vec(self.cwd.as_os_str());
+        let verb = os_str_to_null_terminated_vec(OsStr::new(verb));
+
+        let res = unsafe {
+            ShellExecuteW(
+                null_mut(),
+                verb.as_ptr(),
+                exe.as_ptr(),
+                params.as_ptr(),
+                cwd.as_ptr(),
+                if self.hide_window {
+                    SW_HIDE
+                } else {
+                    SW_SHOWNORMAL
+                },
+            )
+        } as i32;
+
+        // For legacy reasons ShellExecuteW has a weird return value
+        if res > 32 {
+            Ok(())
+        } else {
+            Err(IoError::new(
+                std::io::ErrorKind::Other,
+                format!("ShellExecuteW return value {}", res),
+            ))
+        }
+    }
+
     pub fn spawn(&mut self) -> IoResult<Process> {
         let mut si = self.make_startup_info();
         let mut pi = ProcInfo::new();
-        let mut exe = os_str_to_null_terminated_vec(
-            self.executable
-                .as_ref()
-                .ok_or_else(|| {
-                    IoError::new(
-                        std::io::ErrorKind::InvalidInput,
-                        "no executable has been assigned in call to spawn_as_user",
-                    )
-                })?
-                .as_os_str(),
-        );
-        let mut command_line = os_str_to_null_terminated_vec(
-            self.cmdline
-                .as_ref()
-                .ok_or_else(|| {
-                    IoError::new(
-                        std::io::ErrorKind::InvalidInput,
-                        "no command line has been assigned in call to spawn_as_user",
-                    )
-                })?
-                .as_os_str(),
-        );
+        let (mut exe, mut command_line) = self.executable_and_command_line(0);
         let mut cwd = os_str_to_null_terminated_vec(self.cwd.as_os_str());
 
         let proc_attributes = null_mut();
@@ -310,28 +325,7 @@ impl Command {
     pub fn spawn_as_user(&mut self, token: &Token) -> IoResult<Process> {
         let mut si = self.make_startup_info();
         let mut pi = ProcInfo::new();
-        let mut exe = os_str_to_null_terminated_vec(
-            self.executable
-                .as_ref()
-                .ok_or_else(|| {
-                    IoError::new(
-                        std::io::ErrorKind::InvalidInput,
-                        "no executable has been assigned in call to spawn_as_user",
-                    )
-                })?
-                .as_os_str(),
-        );
-        let mut command_line = os_str_to_null_terminated_vec(
-            self.cmdline
-                .as_ref()
-                .ok_or_else(|| {
-                    IoError::new(
-                        std::io::ErrorKind::InvalidInput,
-                        "no command line has been assigned in call to spawn_as_user",
-                    )
-                })?
-                .as_os_str(),
-        );
+        let (mut exe, mut command_line) = self.executable_and_command_line(0);
         let mut cwd = os_str_to_null_terminated_vec(self.cwd.as_os_str());
 
         let proc_attributes = null_mut();
@@ -367,28 +361,7 @@ impl Command {
         let mut si = self.make_startup_info();
 
         let mut pi = ProcInfo::new();
-        let mut exe = os_str_to_null_terminated_vec(
-            self.executable
-                .as_ref()
-                .ok_or_else(|| {
-                    IoError::new(
-                        std::io::ErrorKind::InvalidInput,
-                        "no executable has been assigned in call to spawn_with_token",
-                    )
-                })?
-                .as_os_str(),
-        );
-        let mut command_line = os_str_to_null_terminated_vec(
-            self.cmdline
-                .as_ref()
-                .ok_or_else(|| {
-                    IoError::new(
-                        std::io::ErrorKind::InvalidInput,
-                        "no command line has been assigned in call to spawn_with_token",
-                    )
-                })?
-                .as_os_str(),
-        );
+        let (mut exe, mut command_line) = self.executable_and_command_line(0);
         let mut cwd = os_str_to_null_terminated_vec(self.cwd.as_os_str());
 
         let logon_flags = 0;
