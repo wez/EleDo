@@ -1,7 +1,6 @@
 use deelevate::{locate_pty_bridge, BridgeServer, Command, PrivilegeLevel, Token};
 use pathsearch::find_executable_in_path;
-use std::convert::TryInto;
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 
 fn main() -> std::io::Result<()> {
     let token = Token::with_current_process()?;
@@ -30,12 +29,11 @@ fn main() -> std::io::Result<()> {
     };
 
     let mut command = Command::with_environment_for_token(&target_token)?;
-    let argv: Vec<&OsStr> = argv.iter().map(|s| s.as_os_str()).collect();
-    command.set_argv(&argv);
 
     let exit_code = match level {
         PrivilegeLevel::Elevated | PrivilegeLevel::HighIntegrityAdmin => {
             // We already have privs, so just run it directly
+            command.set_argv(argv);
             let proc = command.spawn()?;
             let _ = proc.wait_for(None);
             proc.exit_code()?
@@ -45,22 +43,18 @@ fn main() -> std::io::Result<()> {
 
             let bridge_path = locate_pty_bridge()?;
 
-            let pipe_paths = server.start(&target_token)?;
+            let mut bridge_args = server.start(&target_token)?;
+            bridge_args.insert(0, bridge_path.into_os_string());
+            bridge_args.push("--".into());
+            bridge_args.append(&mut argv);
+
             let mut bridge_cmd = Command::with_environment_for_token(&target_token)?;
-            bridge_cmd.set_argv(&[
-                bridge_path.as_os_str(),
-                OsStr::new("--server-to-client"),
-                pipe_paths.server_to_client.as_os_str(),
-                OsStr::new("--client-to-server"),
-                pipe_paths.client_to_server.as_os_str(),
-            ]);
+            bridge_cmd.set_argv(bridge_args);
             bridge_cmd.hide_window();
 
-            let _proc = bridge_cmd.shell_execute("runas")?;
-
-            server.set_command(command);
-            server.run()?
+            let proc = bridge_cmd.shell_execute("runas")?;
+            server.serve(proc)?
         }
     };
-    std::process::exit(exit_code.try_into().unwrap());
+    std::process::exit(exit_code as _);
 }

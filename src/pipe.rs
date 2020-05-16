@@ -18,6 +18,7 @@ use winapi::um::winbase::*;
 use winapi::um::winnt::{DUPLICATE_SAME_ACCESS, GENERIC_READ, GENERIC_WRITE, HANDLE};
 
 /// A little container type for holding a pipe file handle
+#[derive(Debug)]
 pub struct PipeHandle(HANDLE);
 /// The compiler thinks it isn't send because HANDLE is a pointer
 /// type.  We happen to know that moving the handle between threads
@@ -79,17 +80,50 @@ impl PipeHandle {
         }
     }
 
+    /// Wait for a short period for a client to connect to
+    /// this pipe instance.
     pub fn wait_for_pipe_client(&self) -> IoResult<()> {
-        let res = unsafe { ConnectNamedPipe(self.0, null_mut()) };
-        let err = unsafe { GetLastError() };
-        if res == 0 && err != ERROR_PIPE_CONNECTED {
-            Err(win32_error_with_context(
-                "ConnectNamedPipe",
-                IoError::last_os_error(),
-            ))
-        } else {
-            Ok(())
-        }
+        // One does not simply do non-blocking pipe work.
+        // We spawn a thread that will cancel all IO on this pipe if
+        // we don't send it a message within the timeout.
+        use std::sync::mpsc::channel;
+        let (tx, rx) = channel();
+
+        // A little helper for safely passing the HANDLE
+        // pointer to another thread
+        struct HandleHolder(HANDLE);
+        unsafe impl Send for HandleHolder {}
+        let handle = HandleHolder(self.0);
+
+        // This thread will cancel all IO on self.0 if not signalled
+        // in time to stop it.
+        std::thread::spawn(move || {
+            if rx
+                .recv_timeout(std::time::Duration::from_millis(2500))
+                .is_err()
+            {
+                unsafe { winapi::um::ioapiset::CancelIoEx(handle.0, null_mut()) };
+            }
+        });
+
+        // Wrap up the connect operation in a lambda so that we can
+        // ensure that we send a message to the timeout thread before
+        // we unwind.
+        let res = (move || {
+            let res = unsafe { ConnectNamedPipe(self.0, null_mut()) };
+            let err = unsafe { GetLastError() };
+            if res == 0 && err != ERROR_PIPE_CONNECTED {
+                Err(win32_error_with_context(
+                    "ConnectNamedPipe",
+                    IoError::last_os_error(),
+                ))
+            } else {
+                Ok(())
+            }
+        })();
+        let _ = tx.send(());
+
+        res
     }
 
     pub fn duplicate(&self) -> IoResult<Self> {
@@ -121,7 +155,12 @@ impl PipeHandle {
     pub fn open_pipe<P: AsRef<Path>>(name: P) -> IoResult<Self> {
         let path = os_str_to_null_terminated_vec(name.as_ref().as_os_str());
         let share_mode = 0;
-        let security_attr = null_mut();
+        let mut security_attr = SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as _,
+            lpSecurityDescriptor: null_mut(),
+            bInheritHandle: 0,
+        };
+
         let flags = 0;
         let template_file = null_mut();
         let handle = unsafe {
@@ -129,7 +168,7 @@ impl PipeHandle {
                 path.as_ptr(),
                 GENERIC_READ | GENERIC_WRITE,
                 share_mode,
-                security_attr,
+                &mut security_attr,
                 OPEN_EXISTING,
                 flags,
                 template_file,
@@ -138,9 +177,10 @@ impl PipeHandle {
         if handle != INVALID_HANDLE_VALUE {
             Ok(Self(handle))
         } else {
+            let err = IoError::last_os_error();
             Err(win32_error_with_context(
-                "CreateNamedPipeW",
-                IoError::last_os_error(),
+                &format!("CreateFileW: {}", name.as_ref().display()),
+                err,
             ))
         }
     }

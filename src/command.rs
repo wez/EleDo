@@ -3,7 +3,6 @@ use crate::process::Process;
 use crate::procthreadattr::ProcThreadAttributeList;
 use crate::psuedocon::PsuedoCon;
 use crate::{os_str_to_null_terminated_vec, win32_error_with_context, Token};
-use serde::*;
 use std::ffi::{OsStr, OsString};
 use std::io::{Error as IoError, Result as IoResult};
 use std::os::windows::ffi::OsStrExt;
@@ -11,9 +10,8 @@ use std::path::PathBuf;
 use std::ptr::null_mut;
 use winapi::shared::minwindef::{BOOL, DWORD, LPVOID};
 use winapi::um::combaseapi::CoInitializeEx;
-use winapi::um::handleapi::CloseHandle;
+use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
 use winapi::um::objbase::{COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE};
-use winapi::um::processenv::GetStdHandle;
 use winapi::um::processthreadsapi::{
     CreateProcessAsUserW, CreateProcessW, PROCESS_INFORMATION, STARTUPINFOW,
 };
@@ -22,7 +20,7 @@ use winapi::um::userenv::{CreateEnvironmentBlock, DestroyEnvironmentBlock};
 use winapi::um::winbase::{
     CREATE_DEFAULT_ERROR_MODE, CREATE_NEW_CONSOLE, CREATE_NEW_PROCESS_GROUP,
     CREATE_UNICODE_ENVIRONMENT, EXTENDED_STARTUPINFO_PRESENT, STARTF_USESHOWWINDOW,
-    STARTF_USESTDHANDLES, STARTUPINFOEXW, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+    STARTF_USESTDHANDLES, STARTUPINFOEXW,
 };
 use winapi::um::winnt::{HANDLE, LPCWSTR, LPWSTR};
 use winapi::um::winuser::{SW_HIDE, SW_SHOWNORMAL};
@@ -133,17 +131,13 @@ impl ProcInfo {
     }
 }
 
-#[derive(Serialize, Deserialize)]
 pub struct Command {
     args: Vec<OsString>,
     env: Vec<u16>,
     cwd: PathBuf,
     hide_window: bool,
-    #[serde(skip)]
     stdin: Option<PipeHandle>,
-    #[serde(skip)]
     stdout: Option<PipeHandle>,
-    #[serde(skip)]
     stderr: Option<PipeHandle>,
 }
 
@@ -171,8 +165,8 @@ impl Command {
         self.hide_window = true;
     }
 
-    pub fn set_argv(&mut self, argv: &[&OsStr]) {
-        self.args = argv.iter().map(|o| o.to_os_string()).collect();
+    pub fn set_argv(&mut self, argv: Vec<OsString>) {
+        self.args = argv;
     }
 
     fn executable_and_command_line(&self, skip: usize) -> (Vec<u16>, Vec<u16>) {
@@ -218,14 +212,11 @@ impl Command {
             si.wShowWindow = SW_HIDE as _;
         }
 
-        unsafe {
-            si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
-            si.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
-            si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
-        }
-
         if self.stdin.is_some() || self.stdout.is_some() || self.stderr.is_some() {
             si.dwFlags |= STARTF_USESTDHANDLES;
+            si.hStdInput = INVALID_HANDLE_VALUE;
+            si.hStdOutput = INVALID_HANDLE_VALUE;
+            si.hStdError = INVALID_HANDLE_VALUE;
         }
 
         if let Some(pipe) = self.stdin.as_ref() {
@@ -319,7 +310,7 @@ impl Command {
                 &mut pi.0,
             )
         };
-        if res != 1 {
+        if res == 0 {
             Err(win32_error_with_context(
                 "CreateProcessAsUserW",
                 IoError::last_os_error(),

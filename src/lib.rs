@@ -12,8 +12,10 @@ mod sid;
 mod spawn;
 mod token;
 
-pub use bridge::{locate_pty_bridge, BridgeClient, BridgeServer, ServerPipePaths};
+pub use bridge::{locate_pty_bridge, BridgePtyClient, BridgeServer};
 pub use command::Command;
+#[doc(hidden)]
+pub use pipe::PipeHandle;
 pub use spawn::spawn_with_reduced_privileges;
 pub use token::PrivilegeLevel;
 pub use token::Token;
