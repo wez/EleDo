@@ -5,7 +5,7 @@ use crate::psuedocon::PsuedoCon;
 use crate::win32_error_with_context;
 use crate::Token;
 use std::ffi::OsString;
-use std::io::{Error as IoError, Result as IoResult, Write};
+use std::io::{Error as IoError, Read, Result as IoResult, Write};
 use std::os::windows::prelude::*;
 use std::path::{Path, PathBuf};
 use winapi::shared::minwindef::DWORD;
@@ -46,6 +46,15 @@ impl BridgePtyClient {
 
     pub fn run(self, proc: Process) -> IoResult<DWORD> {
         proc.wait_for(None)?;
+        // Well, this is a bit awkward.
+        // If we kill the pty immediately when the child process exits,
+        // it will fracture the associated pipes and any buffered
+        // output will be lost.
+        // There doesn't seem to be a reasonable way to wait for that
+        // flush to occur from here, so we just use a short sleep.
+        // This is gross and I wonder if this is even long enough
+        // for every case?
+        std::thread::sleep(std::time::Duration::from_millis(300));
         proc.exit_code()
     }
 }
@@ -264,10 +273,86 @@ impl BridgeServer {
             std::thread::spawn(move || std::io::copy(&mut conin, &mut conin_dest));
         }
 
+        // Start up the console output processing thread.
+        // This is ostensibly just a matter of taking the output
+        // from the pty created by the bridge executable and piping it
+        // into our own CONOUT$ stream, but it is made a little bit
+        // more complicated because the Windows console APIs emit
+        // some slightly hostile initialization sequences when creating
+        // a fresh PTY and launching a process inside it: it will emit
+        // sequences that move the cursor, clear the screen and change
+        // the window title sequence.
+        // For our embedding use case those are distinctly unwanted.
+        // In order to deal with this, we need to parse the terminal
+        // output so that we can filter them out.
+        // The approach is simple: until we spot that initial title
+        // change, we'll filter out CSI and OSC sequences.
+        // Just in case the behavior changes in the future, we'll
+        // also disable suppression if we see any other kind of
+        // output from the pty stream.
         let conout_thread = self.conout.take().map(|mut conout| {
             let mut conout_src = self.conout_pipe.take().unwrap();
             let _ = conout_src.wait_for_pipe_client();
-            std::thread::spawn(move || std::io::copy(&mut conout_src, &mut conout))
+            std::thread::spawn(move || -> IoResult<()> {
+                use termwiz::escape::osc::OperatingSystemCommand;
+                use termwiz::escape::parser::Parser;
+                use termwiz::escape::Action;
+
+                let mut parser = Parser::new();
+
+                let mut buf = [0u8; 4096];
+                let mut suppress_control = true;
+
+                loop {
+                    let len = conout_src.read(&mut buf)?;
+                    if len == 0 {
+                        return Ok(());
+                    }
+
+                    let mut error = None;
+                    let mut callback = |action: Action| -> IoResult<()> {
+                        match action {
+                            Action::OperatingSystemCommand(osc) => {
+                                match *osc {
+                                    OperatingSystemCommand::SetIconNameAndWindowTitle(_) => {
+                                        if suppress_control {
+                                            // We're now sync'd up with the new pty instance.
+                                            // We ignore this first title change request because
+                                            // it is going to be the uninteresting bridge exe
+                                            suppress_control = false;
+                                            Ok(())
+                                        } else {
+                                            write!(conout, "{}", osc)
+                                        }
+                                    }
+                                    _ => write!(conout, "{}", osc),
+                                }
+                            }
+                            Action::CSI(c) => {
+                                if !suppress_control {
+                                    write!(conout, "{}", c)
+                                } else {
+                                    Ok(())
+                                }
+                            }
+                            _ => {
+                                suppress_control = false;
+                                write!(conout, "{}", action)
+                            }
+                        }
+                    };
+
+                    parser.parse(&buf[0..len], |action| {
+                        if let Err(e) = callback(action) {
+                            error.replace(e);
+                        }
+                    });
+
+                    if let Some(e) = error.take() {
+                        return Err(e);
+                    }
+                }
+            })
         });
 
         if let Some(mut stdin_dest) = self.stdin.take() {
