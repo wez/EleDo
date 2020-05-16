@@ -42,3 +42,92 @@ It may feel like this might be a security concern, but its worth noting that:
 
 * The calling code already has equal or higher privilege (so no escalation is possible)
 * This crate is intended for convenience and consistency for human users
+
+## Bonus Utilities
+
+This crate provides `normdo.exe` for running a command with normal privileges,
+and `eledo.exe` for running a command with elevated privileges.  Unlike other
+elevation solutions, both of these utilities are designed to run from inside
+a console and to keep the output from the target application in that console.
+In addition, these tools use the PTY APIs in order to support running terminal
+applications such as pagers and editors (vim.exe!) correctly!
+
+### `eledo.exe`
+
+*Runs a program with elevated privs*
+
+```
+eledo.exe PROGRAM [ARGUMENTS]
+```
+
+`eledo.exe` will check to see if the current context has admin privileges;
+if it does then it will execute the requested `PROGRAM` directly, returning
+its exit status.
+
+Otherwise, `eledo.exe` will arrange to run the program with an elevated PTY
+that is bridged to the current terminal session.  Elevation requires that the
+current process be able to communicate with the shell in the current desktop
+session, and will typically trigger a UAC prompt for that user.
+
+```
+> eledo.exe whoami /groups
+
+GROUP INFORMATION
+-----------------
+
+Group Name                                                    Type             SID          Attributes
+============================================================= ================ ============ ===============================================================
+Everyone                                                      Well-known group S-1-1-0      Mandatory group, Enabled by default, Enabled group
+NT AUTHORITY\Local account and member of Administrators group Well-known group S-1-5-114    Mandatory group, Enabled by default, Enabled group
+BUILTIN\Administrators                                        Alias            S-1-5-32-544 Mandatory group, Enabled by default, Enabled group, Group owner
+BUILTIN\Performance Log Users                                 Alias            S-1-5-32-559 Mandatory group, Enabled by default, Enabled group
+BUILTIN\Users                                                 Alias            S-1-5-32-545 Mandatory group, Enabled by default, Enabled group
+NT AUTHORITY\INTERACTIVE                                      Well-known group S-1-5-4      Mandatory group, Enabled by default, Enabled group
+CONSOLE LOGON                                                 Well-known group S-1-2-1      Mandatory group, Enabled by default, Enabled group
+NT AUTHORITY\Authenticated Users                              Well-known group S-1-5-11     Mandatory group, Enabled by default, Enabled group
+NT AUTHORITY\This Organization                                Well-known group S-1-5-15     Mandatory group, Enabled by default, Enabled group
+NT AUTHORITY\Local account                                    Well-known group S-1-5-113    Mandatory group, Enabled by default, Enabled group
+LOCAL                                                         Well-known group S-1-2-0      Mandatory group, Enabled by default, Enabled group
+NT AUTHORITY\NTLM Authentication                              Well-known group S-1-5-64-10  Mandatory group, Enabled by default, Enabled group
+Mandatory Label\High Mandatory Level                          Label            S-1-16-12288
+```
+
+### `normdo.exe`
+
+*Runs a program with normal privs*
+
+```
+normdo.exe PROGRAM [ARGUMENTS]
+```
+
+`normdo.exe` will check to see if the current context has admin privileges;
+if it does *not* then it will execute the requested `PROGRAM` directly, returning
+its exit status.
+
+Otherwise, `eledo.exe` will arrange to run the program with a Normal user token
+with Medium integrity level, dropping/denying the local administrator group
+from the current token.  The program will be run in a PTY that is bridged to
+the current terminal session.
+
+```
+> normdo.exe whoami /groups
+
+GROUP INFORMATION
+-----------------
+
+Group Name                                                    Type             SID          Attributes
+============================================================= ================ ============ ==================================================
+Everyone                                                      Well-known group S-1-1-0      Mandatory group, Enabled by default, Enabled group
+NT AUTHORITY\Local account and member of Administrators group Well-known group S-1-5-114    Group used for deny only
+BUILTIN\Administrators                                        Alias            S-1-5-32-544 Group used for deny only
+BUILTIN\Performance Log Users                                 Alias            S-1-5-32-559 Mandatory group, Enabled by default, Enabled group
+BUILTIN\Users                                                 Alias            S-1-5-32-545 Mandatory group, Enabled by default, Enabled group
+NT AUTHORITY\INTERACTIVE                                      Well-known group S-1-5-4      Mandatory group, Enabled by default, Enabled group
+CONSOLE LOGON                                                 Well-known group S-1-2-1      Mandatory group, Enabled by default, Enabled group
+NT AUTHORITY\Authenticated Users                              Well-known group S-1-5-11     Mandatory group, Enabled by default, Enabled group
+NT AUTHORITY\This Organization                                Well-known group S-1-5-15     Mandatory group, Enabled by default, Enabled group
+NT AUTHORITY\Local account                                    Well-known group S-1-5-113    Mandatory group, Enabled by default, Enabled group
+LOCAL                                                         Well-known group S-1-2-0      Mandatory group, Enabled by default, Enabled group
+NT AUTHORITY\NTLM Authentication                              Well-known group S-1-5-64-10  Mandatory group, Enabled by default, Enabled group
+Mandatory Label\Medium Mandatory Level                        Label            S-1-16-8192
+```
