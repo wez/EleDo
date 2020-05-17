@@ -1,6 +1,7 @@
-# de-elevate your process
+# (de-)elevate your process
 
-This crate helps to reduce the privilege level of the calling code on Windows systems.
+This crate helps to reduce or increase the privilege level of the calling code
+on Windows systems.
 
 The target audience is owners of stateful tools or services that humans interact
 with on the local system and where those tools/service are intended generally
@@ -16,12 +17,11 @@ msys windows, it is reasonably likely that the mix of privileges in different
 contexts will result in permission related problems that result in weird or
 hard to debug problems and end up costing people time.
 
-
 ## How do I use it?
 
 There are two logical halves to this crate;
 
-* Detecting increased privileges, including both *Elevation* and High Integrity
+* Detecting the privilege level, including both *Elevation* and High Integrity
   Administrative privs, so that the embedding application can choose whether
   to surface this as an error, or to continue with the second half of the crate...
 
@@ -43,15 +43,19 @@ match token.privilege_level()? {
 }
 ```
 
-* Re-executing the application with reduced privs, while passing the stdio
+* Re-executing the application with altered privs, while passing the stdio
   streams and process exit status back to the original parent.
 
 ```rust
 use deelevate::spawn_with_reduced_privileges;
+use deelevate::spawn_with_elevated_privileges;
 
 // If we have admin privs, this next line will either spawn a version
 // of the current process with reduced privs, or yield an error trying
 // to do that.
+// The spawn_with_elevated_privileges function works similarly, except
+// that it will only return when the calling process has elevated
+// privs.
 spawn_with_reduced_privileges()?;
 
 // If we reach this line it is because we don't have any special privs

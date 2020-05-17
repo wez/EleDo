@@ -50,3 +50,30 @@ pub fn spawn_with_reduced_privileges(token: &Token) -> IoResult<()> {
         }
     }
 }
+
+/// If the token is NOT PrivilegeLevel::NotPrivileged then this function
+/// will return `Ok` and the intent is that the host program continue
+/// with its normal operation.
+///
+/// Otherwise, assuming no errors were detected, this function will
+/// not return to the caller.  Instead an elevated privilege token
+/// will be created and used to spawn a copy of the host program,
+/// passing through the arguments from the current process.
+/// *This* process will remain running to bridge pipes for the stdio
+/// streams to the new process and to wait for the child process
+/// and then terminate *this* process and exit with the exit code
+/// from the child.
+pub fn spawn_with_elevated_privileges(token: &Token) -> IoResult<()> {
+    let level = token.privilege_level()?;
+
+    let target_token = match level {
+        PrivilegeLevel::NotPrivileged => token.as_medium_integrity_safer_token()?,
+        PrivilegeLevel::HighIntegrityAdmin | PrivilegeLevel::Elevated => return Ok(()),
+    };
+
+    let mut server = BridgeServer::new();
+    let mut argv = std::env::args_os().collect();
+    let mut bridge_cmd = server.start_for_command(&mut argv, &target_token)?;
+    let proc = bridge_cmd.spawn_with_token(&target_token)?;
+    std::process::exit(server.serve(proc)? as _);
+}
