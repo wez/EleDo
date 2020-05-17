@@ -17,7 +17,8 @@ jobs:
         mkdir DeElevate
         mv target/release/eledo.exe target/release/eledo-pty-bridge.exe target/release/normdo.exe DeElevate/
         cp README.md LICENSE.md DeElevate
-        7z a -tzip DeElevate.zip DeElevate
+        cd DeElevate
+        7z a -tzip ../DeElevate.zip *
     - name: "Upload artifact"
       uses: actions/upload-artifact@master
       with:
