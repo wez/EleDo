@@ -19,6 +19,8 @@ use structopt::*;
 ///    `eledo whoami /groups`
 #[derive(StructOpt)]
 #[structopt(
+    about = "EleDo - \"Do\" a command with Elevated privileges",
+    author = "Wez Furlong",
     setting(clap::AppSettings::TrailingVarArg),
     setting(clap::AppSettings::ArgRequiredElseHelp)
 )]

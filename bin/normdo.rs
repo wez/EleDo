@@ -18,6 +18,8 @@ use structopt::*;
 ///    `normdo whoami /groups`
 #[derive(StructOpt)]
 #[structopt(
+    about = "NormDo - \"Do\" a command with Normal privileges",
+    author = "Wez Furlong",
     setting(clap::AppSettings::TrailingVarArg),
     setting(clap::AppSettings::ArgRequiredElseHelp)
 )]
