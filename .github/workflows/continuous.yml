@@ -18,6 +18,11 @@ jobs:
         mv target/release/eledo.exe target/release/eledo-pty-bridge.exe target/release/normdo.exe DeElevate/
         cp README.md LICENSE.md DeElevate
         7z a -tzip DeElevate.zip DeElevate
+    - name: "Upload artifact"
+      uses: actions/upload-artifact@master
+      with:
+         name: "DeElevate"
+         path: "DeElevate.zip"
     - name: "Upload to Continuous Release"
       uses: wez/upload-release-assets@releases/v1
       with:
