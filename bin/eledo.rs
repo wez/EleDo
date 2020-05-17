@@ -1,22 +1,43 @@
 use deelevate::{BridgeServer, Command, PrivilegeLevel, Token};
 use pathsearch::find_executable_in_path;
 use std::ffi::OsString;
+use structopt::*;
+
+/// EleDo - "Do" a command with Elevated privileges
+///
+/// EleDo will check to see if the current context has admin privileges.
+/// If it does then it will execute the requested program directly,
+/// returning the exit status from that program.
+///
+/// Otherwise, EleDo will arrange to run the program with an elevated
+/// PTY that is bridged to the current terminal session.  Elevation
+/// requires that the current process be able to communicate with the
+/// shell in the current desktop session and will typically trigger
+/// a UAC prompt for that user to confirm that elevation should occur.
+///
+/// Example:
+///    `eledo whoami /groups`
+#[derive(StructOpt)]
+#[structopt(
+    setting(clap::AppSettings::TrailingVarArg),
+    setting(clap::AppSettings::ArgRequiredElseHelp)
+)]
+#[derive(Debug)]
+struct Opt {
+    #[structopt(value_name("PROGRAM"), parse(from_os_str))]
+    args: Vec<OsString>,
+}
 
 fn main() -> std::io::Result<()> {
+    let mut opt = Opt::from_args();
+
     let token = Token::with_current_process()?;
     let level = token.privilege_level()?;
 
-    let mut argv: Vec<OsString> = std::env::args_os().skip(1).collect();
-    if argv.is_empty() {
-        eprintln!("USAGE: eledo COMMAND [ARGS]...");
-        eprintln!("No command or arguments were specified");
-        std::process::exit(1);
-    }
-
-    argv[0] = match find_executable_in_path(&argv[0]) {
+    opt.args[0] = match find_executable_in_path(&opt.args[0]) {
         Some(path) => path.into(),
         None => {
-            eprintln!("Unable to find {:?} in path", argv[0]);
+            eprintln!("Unable to find {:?} in path", opt.args[0]);
             std::process::exit(1);
         }
     };
@@ -33,7 +54,7 @@ fn main() -> std::io::Result<()> {
     let exit_code = match level {
         PrivilegeLevel::Elevated | PrivilegeLevel::HighIntegrityAdmin => {
             // We already have privs, so just run it directly
-            command.set_argv(argv);
+            command.set_argv(opt.args);
             let proc = command.spawn()?;
             let _ = proc.wait_for(None);
             proc.exit_code()?
@@ -41,7 +62,7 @@ fn main() -> std::io::Result<()> {
         PrivilegeLevel::NotPrivileged => {
             let mut server = BridgeServer::new();
 
-            let mut bridge_cmd = server.start_for_command(&mut argv, &target_token)?;
+            let mut bridge_cmd = server.start_for_command(&mut opt.args, &target_token)?;
 
             let proc = bridge_cmd.shell_execute("runas")?;
             server.serve(proc)?

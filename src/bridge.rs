@@ -406,7 +406,7 @@ impl BridgeServer {
     }
 }
 
-pub fn locate_pty_bridge() -> IoResult<PathBuf> {
+fn locate_pty_bridge() -> IoResult<PathBuf> {
     let bridge_name = "eledo-pty-bridge.exe";
     let bridge_path = std::env::current_exe()?
         .parent()
