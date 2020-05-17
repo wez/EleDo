@@ -24,8 +24,39 @@ There are two logical halves to this crate;
 * Detecting increased privileges, including both *Elevation* and High Integrity
   Administrative privs, so that the embedding application can choose whether
   to surface this as an error, or to continue with the second half of the crate...
+
+```rust
+use deelevate::*;
+
+let token = Token::with_current_process()?;
+match token.privilege_level()? {
+  PrivilegeLevel::NotPrivileged => {
+    // No special privs
+  }
+  PrivilegeLevel::Elevated => {
+    // Invoked via runas
+  }
+  PrivilegeLevel::HighIntegrityAdmin => {
+    // Some other kind of admin priv.
+    // For example: ssh session to Windows 10 SSH server
+  }
+}
+```
+
 * Re-executing the application with reduced privs, while passing the stdio
   streams and process exit status back to the original parent.
+
+```rust
+use deelevate::spawn_with_reduced_privileges;
+
+// If we have admin privs, this next line will either spawn a version
+// of the current process with reduced privs, or yield an error trying
+// to do that.
+spawn_with_reduced_privileges()?;
+
+// If we reach this line it is because we don't have any special privs
+// and we can therefore continue with our normal operation.
+```
 
 The `show` example demonstrates testing for the privilege level.
 
