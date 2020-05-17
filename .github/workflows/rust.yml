@@ -1,0 +1,27 @@
+name: Rust
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  build:
+    runs-on: "vs2017-win2016"
+    steps:
+    - uses: actions/checkout@v2
+    - name: Build
+      run: cargo build --release --verbose
+    - name: Run tests
+      run: cargo test --release --verbose
+    - name: "Capture utilities"
+      shell: bash
+      run: |
+        mkdir pkg_
+        mv target/release/eledo*.exe target/release/normdo.exe pkg_/
+    - name: "Upload artifact"
+      uses: actions/upload-artifact@master
+      with:
+         name: "windows"
+         path: "pkg_"
