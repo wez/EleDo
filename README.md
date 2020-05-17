@@ -3,8 +3,8 @@
 This crate helps to reduce or increase the privilege level of the calling code
 on Windows systems.
 
-The target audience is owners of stateful tools or services that humans interact
-with on the local system and where those tools/service are intended generally
+The target audience is owners of stateful tools or services that humans
+interact with on the local system and where those tools/services are generally
 intended to run as that human at their normal privilege level.
 
 It is not intended to be used in a multi-tenant situation where there are
@@ -21,12 +21,12 @@ hard to debug problems and end up costing people time.
 
 There are two logical halves to this crate;
 
-* Detecting the privilege level, including both *Elevation* and High Integrity
-  Administrative privs, so that the embedding application can choose whether
+* Detecting the privilege level, including both *Elevation* and *High Integrity
+  Administrative* privs, so that the embedding application can choose whether
   to surface this as an error, or to continue with the second half of the crate...
 
 ```rust
-use deelevate::*;
+use deelevate::{Token, PrivilegeLevel};
 
 let token = Token::with_current_process()?;
 match token.privilege_level()? {
@@ -86,6 +86,11 @@ elevation solutions, both of these utilities are designed to run from inside
 a console and to keep the output from the target application in that console.
 In addition, these tools use the PTY APIs in order to support running terminal
 applications such as pagers and editors (vim.exe!) correctly!
+
+Both of these tools require that the `eledo-pty-bridge.exe` be installed
+alongside them, or otherwise be in the PATH.  The bridge process is required
+to host the PTY and spawn the program in the alternatively privileged
+context.
 
 ### `eledo.exe`
 
