@@ -1,6 +1,3 @@
-// Don't create a new standard console window when launched from the windows GUI.
-//#![windows_subsystem = "windows"]
-
 use deelevate::{BridgePtyClient, Command, PipeHandle, Token};
 use std::convert::TryInto;
 use std::ffi::OsString;
@@ -80,8 +77,7 @@ fn main() -> std::io::Result<()> {
         let mut cmd = Command::with_environment_for_token(&token)?;
         cmd.set_argv(args);
 
-        let proc = pty_client.spawn(cmd)?;
-        let exit_code = pty_client.run(proc)?;
+        let exit_code = pty_client.run(cmd)?;
         std::process::exit(exit_code as _);
     } else {
         let mut cmd = Command::with_environment_for_token(&token)?;

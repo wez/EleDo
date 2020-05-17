@@ -290,6 +290,7 @@ pub struct PipePair {
 
 impl PipePair {
     /// Create a new pipe
+    #[allow(unused)]
     pub fn new() -> IoResult<Self> {
         let mut sa = SECURITY_ATTRIBUTES {
             nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,

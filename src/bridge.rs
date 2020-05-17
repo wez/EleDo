@@ -40,11 +40,8 @@ impl BridgePtyClient {
         Ok(Self { con })
     }
 
-    pub fn spawn(&self, mut command: Command) -> IoResult<Process> {
-        command.spawn_with_pty(&self.con)
-    }
-
-    pub fn run(self, proc: Process) -> IoResult<DWORD> {
+    pub fn run(&self, mut command: Command) -> IoResult<DWORD> {
+        let proc = command.spawn_with_pty(&self.con)?;
         proc.wait_for(None)?;
         // Well, this is a bit awkward.
         // If we kill the pty immediately when the child process exits,
@@ -59,6 +56,7 @@ impl BridgePtyClient {
     }
 }
 
+#[allow(unused)]
 fn join_with_timeout(join_handle: std::thread::JoinHandle<()>, timeout: std::time::Duration) {
     use std::sync::mpsc::channel;
     let (tx, rx) = channel();
@@ -158,6 +156,25 @@ impl BridgeServer {
             stdout: None,
             stdin: None,
         }
+    }
+
+    pub fn start_for_command(
+        &mut self,
+        argv: &mut Vec<OsString>,
+        target_token: &Token,
+    ) -> IoResult<Command> {
+        let bridge_path = locate_pty_bridge()?;
+        let mut bridge_args = self.start(target_token)?;
+
+        bridge_args.insert(0, bridge_path.into_os_string());
+        bridge_args.push("--".into());
+        bridge_args.append(argv);
+
+        let mut bridge_cmd = Command::with_environment_for_token(&target_token)?;
+        bridge_cmd.set_argv(bridge_args);
+        bridge_cmd.hide_window();
+
+        Ok(bridge_cmd)
     }
 
     /// Creates the server pipe and returns the name of the pipe

@@ -1,4 +1,4 @@
-use deelevate::{locate_pty_bridge, BridgeServer, Command, PrivilegeLevel, Token};
+use deelevate::{BridgeServer, Command, PrivilegeLevel, Token};
 use pathsearch::find_executable_in_path;
 use std::ffi::OsString;
 
@@ -40,16 +40,7 @@ fn main() -> std::io::Result<()> {
         PrivilegeLevel::HighIntegrityAdmin | PrivilegeLevel::Elevated => {
             let mut server = BridgeServer::new();
 
-            let bridge_path = locate_pty_bridge()?;
-
-            let mut bridge_args = server.start(&target_token)?;
-            bridge_args.insert(0, bridge_path.into_os_string());
-            bridge_args.push("--".into());
-            bridge_args.append(&mut argv);
-
-            let mut bridge_cmd = Command::with_environment_for_token(&target_token)?;
-            bridge_cmd.set_argv(bridge_args);
-            bridge_cmd.hide_window();
+            let mut bridge_cmd = server.start_for_command(&mut argv, &target_token)?;
 
             let proc = match level {
                 PrivilegeLevel::Elevated => bridge_cmd.spawn_with_token(&target_token)?,
