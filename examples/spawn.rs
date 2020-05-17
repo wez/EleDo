@@ -1,6 +1,6 @@
 //! This example prints the effective privilege output from
 //! `whoami` as well as our understanding of that level
-use deelevate::{spawn_with_reduced_privileges, Token};
+use deelevate::{spawn_with_normal_privileges, Token};
 
 fn whoami() {
     let output = std::process::Command::new("whoami.exe")
@@ -18,6 +18,6 @@ fn main() {
     let level = token.privilege_level().unwrap();
     println!("priv level is {:?}", level);
 
-    spawn_with_reduced_privileges(&token).unwrap();
+    spawn_with_normal_privileges().unwrap();
     println!("now I'm safe to proceed with reduced privs");
 }

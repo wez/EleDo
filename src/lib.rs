@@ -16,7 +16,7 @@ pub use bridge::{BridgePtyClient, BridgeServer};
 pub use command::Command;
 #[doc(hidden)]
 pub use pipe::PipeHandle;
-pub use spawn::{spawn_with_elevated_privileges, spawn_with_reduced_privileges};
+pub use spawn::{spawn_with_elevated_privileges, spawn_with_normal_privileges};
 pub use token::PrivilegeLevel;
 pub use token::Token;
 

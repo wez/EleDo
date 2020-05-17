@@ -47,7 +47,7 @@ match token.privilege_level()? {
   streams and process exit status back to the original parent.
 
 ```rust
-use deelevate::spawn_with_reduced_privileges;
+use deelevate::spawn_with_normal_privileges;
 use deelevate::spawn_with_elevated_privileges;
 
 // If we have admin privs, this next line will either spawn a version
@@ -56,7 +56,7 @@ use deelevate::spawn_with_elevated_privileges;
 // The spawn_with_elevated_privileges function works similarly, except
 // that it will only return when the calling process has elevated
 // privs.
-spawn_with_reduced_privileges()?;
+spawn_with_normal_privileges()?;
 
 // If we reach this line it is because we don't have any special privs
 // and we can therefore continue with our normal operation.
