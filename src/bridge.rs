@@ -4,12 +4,13 @@ use crate::process::Process;
 use crate::psuedocon::PsuedoCon;
 use crate::win32_error_with_context;
 use crate::Token;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::io::{Error as IoError, Read, Result as IoResult, Write};
 use std::os::windows::prelude::*;
 use std::path::{Path, PathBuf};
 use winapi::shared::minwindef::DWORD;
 use winapi::um::consoleapi::{GetConsoleMode, SetConsoleMode};
+use winapi::um::consoleapi::{ReadConsoleW, WriteConsoleW};
 use winapi::um::fileapi::GetFileType;
 use winapi::um::winbase::FILE_TYPE_CHAR;
 use winapi::um::wincon::{
@@ -126,6 +127,29 @@ fn set_console_mode(pipe: &PipeHandle, mode: DWORD) -> IoResult<()> {
             "SetConsoleMode",
             IoError::last_os_error(),
         ))
+    } else {
+        Ok(())
+    }
+}
+
+// Due to https://github.com/microsoft/terminal/issues/4551
+// we cannot simply write bytes to the console, we have to
+// use WriteConsoleW to send the unicode data through, otherwise
+// we end up with problems with mismatching codepages.
+fn write_console(out: &mut PipeHandle, s: &str) -> IoResult<()> {
+    let c: Vec<u16> = OsStr::new(s).encode_wide().collect();
+    let mut wrote = 0;
+    let res = unsafe {
+        WriteConsoleW(
+            out.as_handle(),
+            c.as_ptr() as *const _,
+            c.len() as _,
+            &mut wrote,
+            std::ptr::null_mut(),
+        )
+    };
+    if res == 0 {
+        Err(IoError::last_os_error())
     } else {
         Ok(())
     }
@@ -284,10 +308,33 @@ impl BridgeServer {
     }
 
     pub fn serve(mut self, proc: Process) -> IoResult<DWORD> {
-        if let Some(mut conin) = self.conin.take() {
+        if let Some(conin) = self.conin.take() {
             let mut conin_dest = self.conin_pipe.take().unwrap();
             conin_dest.wait_for_pipe_client()?;
-            std::thread::spawn(move || std::io::copy(&mut conin, &mut conin_dest));
+            std::thread::spawn(move || -> IoResult<()> {
+                let mut buf = [0u16; 8192];
+                let mut num_read = 0;
+                loop {
+                    let res = unsafe {
+                        ReadConsoleW(
+                            conin.as_handle(),
+                            buf.as_mut_ptr() as *mut _,
+                            buf.len() as _,
+                            &mut num_read,
+                            std::ptr::null_mut(),
+                        )
+                    };
+
+                    if res == 0 {
+                        return Err(IoError::last_os_error());
+                    }
+
+                    let s = OsString::from_wide(&buf[0..num_read as usize]);
+                    let utf8 = s.to_string_lossy();
+
+                    conin_dest.write_all(utf8.as_bytes())?;
+                }
+            });
         }
 
         // Start up the console output processing thread.
@@ -339,22 +386,22 @@ impl BridgeServer {
                                             suppress_control = false;
                                             Ok(())
                                         } else {
-                                            write!(conout, "{}", osc)
+                                            write_console(&mut conout, &format!("{}", osc))
                                         }
                                     }
-                                    _ => write!(conout, "{}", osc),
+                                    _ => write_console(&mut conout, &format!("{}", osc)),
                                 }
                             }
                             Action::CSI(c) => {
                                 if !suppress_control {
-                                    write!(conout, "{}", c)
+                                    write_console(&mut conout, &format!("{}", c))
                                 } else {
                                     Ok(())
                                 }
                             }
                             _ => {
                                 suppress_control = false;
-                                write!(conout, "{}", action)
+                                write_console(&mut conout, &format!("{}", action))
                             }
                         }
                     };
