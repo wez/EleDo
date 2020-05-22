@@ -8,6 +8,7 @@ license = "MIT"
 documentation = "https://docs.rs/deelevate"
 readme = "README.md"
 keywords = ["UAC", "elevate", "privileges"]
+build = "build.rs"
 
 [lib]
 crate-type = ["lib", "staticlib"]
@@ -26,6 +27,9 @@ path = "bin/ptybridge.rs"
 
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[target.'cfg(windows)'.build-dependencies]
+embed-resource = "1.3"
 
 [dependencies]
 pathsearch = "0.2"
@@ -54,6 +58,7 @@ winapi = { version = "0.3", features = [
   "winbase",
   "wincon",
   "wincontypes",
+  "winnls",
   "winerror",
   "winsafer",
   "winuser",

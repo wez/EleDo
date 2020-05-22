@@ -3,7 +3,8 @@ use std::convert::TryInto;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use structopt::*;
-use winapi::um::wincon::{SetConsoleCursorPosition, COORD};
+use winapi::um::wincon::{SetConsoleCP, SetConsoleCursorPosition, SetConsoleOutputCP, COORD};
+use winapi::um::winnls::CP_UTF8;
 
 /// A helper program for `eledo` and `normdo` that is used to
 /// bridge pty and pipes between the different privilege levels.
@@ -37,6 +38,11 @@ struct Opt {
 
 fn main() -> std::io::Result<()> {
     let mut opt = Opt::from_args();
+
+    unsafe {
+        SetConsoleCP(CP_UTF8);
+        SetConsoleOutputCP(CP_UTF8);
+    }
 
     let token = Token::with_current_process()?;
 
