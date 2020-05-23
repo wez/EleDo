@@ -1,23 +1,40 @@
-# (de-)elevate your process
+# EleDo - Elevated-Do
 
-This crate helps to reduce or increase the privilege level of the calling code
-on Windows systems.
+This repo is the home of EleDo (and NormDo), utilities that allow switching
+privilege levels from the command line on Windows 10 and later.
 
-The target audience is owners of stateful tools or services that humans
-interact with on the local system and where those tools/services are generally
-intended to run as that human at their normal privilege level.
+The core privilege shifting code is also available as a Rust crate and a
+small C library to make it possible for an console based application to
+to detect and adjust its privilege level.
 
-It is not intended to be used in a multi-tenant situation where there are
-multiple user tokens in use.
+While this repo is named for the privilege elevation aspect, it originally
+started life with the goal of reducing privileges to "normal" levels.
 
-## Why?
+## Why Elevate?
 
-With folks running a combination of elevated powershells and regular command or
-msys windows, it is reasonably likely that the mix of privileges in different
-contexts will result in permission related problems that result in weird or
-hard to debug problems and end up costing people time.
+In some cases you need a higher level of access than is normal; for example, to
+install software or make system configuration.  This is not new; most users
+will use the "Run as Administrator" option for a powershell session and run
+their commands that way, leaving the privileged session open for convenience,
+mixing commands and running most of them with higher privileges than are
+strictly required.
 
-## How do I use it?
+Users coming from unix systems generally prefer not to do this and instead use
+a utility known as `sudo` (Super-User Do) to run a specific command with
+increased privileges.
+
+This repo provides `eledo.exe` as a workalike to `sudo`; it will attempt to
+increase privileges using the User Account Control mechanism built in to
+Windows to prompt the user to confirm that it should run with increased
+privileges.
+
+This repo also provides `normdo.exe` (Normal User Do) that works in the
+opposite way, dropping privileges back to normal levels to run a command.
+This functionality is important for security-minded code that wishes to
+run with lower (if not least!) privilege regardless of the privilege level
+of the code that invoked it.
+
+## How do I use the Rust crate?
 
 There are two logical halves to this crate;
 
@@ -78,7 +95,7 @@ It may feel like this might be a security concern, but its worth noting that:
 * The calling code already has equal or higher privilege (so no escalation is possible)
 * This crate is intended for convenience and consistency for human users
 
-## Bonus Utilities
+## Utilities
 
 This crate provides `normdo.exe` for running a command with normal privileges,
 and `eledo.exe` for running a command with elevated privileges.  Unlike other
@@ -174,4 +191,4 @@ Mandatory Label\Medium Mandatory Level                        Label            S
 
 ## Thanks
 
-Icons made by <a href="https://www.flaticon.com/authors/pixel-perfect" title="Pixel perfect">Pixel perfect</a> from <a href="https://www.flaticon.com/" title="Flaticon"> www.flaticon.com</a>
+The elevator icons embedded into the utilities were made by <a href="https://www.flaticon.com/authors/pixel-perfect" title="Pixel perfect">Pixel perfect</a> from <a href="https://www.flaticon.com/" title="Flaticon"> www.flaticon.com</a>
