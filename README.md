@@ -1,5 +1,7 @@
 # EleDo - Elevated-Do
 
+[Download EleDo.zip](https://github.com/wez/deelevate/releases/download/Continuous/EleDo.zip)
+
 This repo is the home of EleDo (and NormDo), utilities that allow switching
 privilege levels from the command line on Windows 10 and later.
 

@@ -22,5 +22,5 @@ jobs:
     - name: "Upload artifact"
       uses: actions/upload-artifact@master
       with:
-         name: "deelevate"
+         name: "eledo"
          path: "pkg_"
