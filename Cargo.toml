@@ -31,6 +31,7 @@ path = "bin/ptybridge.rs"
 [build-dependencies]
 embed-resource = "1.3"
 vergen = "3"
+cc = "1.0"
 
 [dependencies]
 pathsearch = "0.2"
