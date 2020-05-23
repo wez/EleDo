@@ -22,7 +22,8 @@ use structopt::*;
     about = "EleDo - \"Do\" a command with Elevated privileges",
     author = "Wez Furlong",
     setting(clap::AppSettings::TrailingVarArg),
-    setting(clap::AppSettings::ArgRequiredElseHelp)
+    setting(clap::AppSettings::ArgRequiredElseHelp),
+    version = env!("VERGEN_SEMVER_LIGHTWEIGHT")
 )]
 #[derive(Debug)]
 struct Opt {

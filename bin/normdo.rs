@@ -21,7 +21,8 @@ use structopt::*;
     about = "NormDo - \"Do\" a command with Normal privileges",
     author = "Wez Furlong",
     setting(clap::AppSettings::TrailingVarArg),
-    setting(clap::AppSettings::ArgRequiredElseHelp)
+    setting(clap::AppSettings::ArgRequiredElseHelp),
+    version = env!("VERGEN_SEMVER_LIGHTWEIGHT")
 )]
 #[derive(Debug)]
 struct Opt {

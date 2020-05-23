@@ -10,6 +10,9 @@ use winapi::um::winnls::CP_UTF8;
 /// bridge pty and pipes between the different privilege levels.
 /// This utility is not intended to be run by humans.
 #[derive(StructOpt)]
+#[structopt(
+    version = env!("VERGEN_SEMVER_LIGHTWEIGHT")
+)]
 struct Opt {
     #[structopt(long, parse(from_os_str))]
     stdin: Option<PathBuf>,
