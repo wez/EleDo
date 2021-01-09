@@ -169,8 +169,20 @@ impl Command {
         self.args = argv;
     }
 
-    fn executable_and_command_line(&self, skip: usize) -> (Vec<u16>, Vec<u16>) {
-        let executable = os_str_to_null_terminated_vec(&self.args[0]);
+    fn executable_and_command_line(&self, skip: usize) -> IoResult<(Vec<u16>, Vec<u16>)> {
+        let exe_path = PathBuf::from(self.args[0].clone());
+        let exe_path = if !exe_path.has_root() {
+            pathsearch::find_executable_in_path(&exe_path).ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("{:?} not found in the path", exe_path),
+                )
+            })?
+        } else {
+            exe_path
+        };
+
+        let executable = os_str_to_null_terminated_vec(&exe_path.as_os_str());
 
         let mut cmdline = Vec::<u16>::new();
         for arg in self.args.iter().skip(skip) {
@@ -181,7 +193,7 @@ impl Command {
         }
         cmdline.push(0);
 
-        (executable, cmdline)
+        Ok((executable, cmdline))
     }
 
     pub fn set_stdin(&mut self, p: PipeHandle) -> IoResult<()> {
@@ -239,7 +251,7 @@ impl Command {
                 COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE,
             )
         };
-        let (exe, params) = self.executable_and_command_line(1);
+        let (exe, params) = self.executable_and_command_line(1)?;
         let cwd = os_str_to_null_terminated_vec(self.cwd.as_os_str());
         let verb = os_str_to_null_terminated_vec(OsStr::new(verb));
 
@@ -289,7 +301,7 @@ impl Command {
         si.lpAttributeList = attrs.as_mut_ptr();
 
         let mut pi = ProcInfo::new();
-        let (mut exe, mut command_line) = self.executable_and_command_line(0);
+        let (mut exe, mut command_line) = self.executable_and_command_line(0)?;
         let mut cwd = os_str_to_null_terminated_vec(self.cwd.as_os_str());
 
         let proc_attributes = null_mut();
@@ -323,7 +335,7 @@ impl Command {
     pub fn spawn(&mut self) -> IoResult<Process> {
         let mut si = self.make_startup_info();
         let mut pi = ProcInfo::new();
-        let (mut exe, mut command_line) = self.executable_and_command_line(0);
+        let (mut exe, mut command_line) = self.executable_and_command_line(0)?;
         let mut cwd = os_str_to_null_terminated_vec(self.cwd.as_os_str());
 
         let proc_attributes = null_mut();
@@ -346,7 +358,7 @@ impl Command {
         };
         if res != 1 {
             Err(win32_error_with_context(
-                "CreateProcessAsUserW",
+                "CreateProcessW",
                 IoError::last_os_error(),
             ))
         } else {
@@ -357,7 +369,8 @@ impl Command {
     pub fn spawn_as_user(&mut self, token: &Token) -> IoResult<Process> {
         let mut si = self.make_startup_info();
         let mut pi = ProcInfo::new();
-        let (mut exe, mut command_line) = self.executable_and_command_line(0);
+
+        let (mut exe, mut command_line) = self.executable_and_command_line(0)?;
         let mut cwd = os_str_to_null_terminated_vec(self.cwd.as_os_str());
 
         let proc_attributes = null_mut();
@@ -393,7 +406,7 @@ impl Command {
         let mut si = self.make_startup_info();
 
         let mut pi = ProcInfo::new();
-        let (mut exe, mut command_line) = self.executable_and_command_line(0);
+        let (mut exe, mut command_line) = self.executable_and_command_line(0)?;
         let mut cwd = os_str_to_null_terminated_vec(self.cwd.as_os_str());
 
         let logon_flags = 0;
