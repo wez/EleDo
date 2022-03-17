@@ -1,6 +1,6 @@
 [package]
 name = "deelevate"
-version = "0.1.1"
+version = "0.2.0"
 authors = ["Wez Furlong"]
 edition = "2018"
 description = "Drop privileges on Windows"
@@ -14,10 +14,10 @@ crate-type = ["lib", "staticlib"]
 
 [dependencies]
 pathsearch = "0.2"
-lazy_static = "1.3"
-rand = "0.7"
+lazy_static = "1.4"
+rand = "0.8"
 shared_library = "0.1"
-termwiz = "0.8"
+termwiz = "0.15"
 winapi = { version = "0.3", features = [
   "accctrl",
   "aclapi",

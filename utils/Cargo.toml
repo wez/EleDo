@@ -23,7 +23,7 @@ name = "eledo-pty-bridge"
 path = "bin/ptybridge.rs"
 
 [build-dependencies]
-embed-resource = "1.3"
+embed-resource = "1.7"
 vergen = "3"
 cc = "1.0"
 
