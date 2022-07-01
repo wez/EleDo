@@ -76,13 +76,13 @@ impl EnvironmentBlock {
         // \0
         // So when we find the sequence \0\0 then we have found the extent
         // of the block.
-        unsafe {
+        
             let mut ptr = self.0 as *const u16;
             let mut size = 0;
             loop {
-                let next = ptr.add(1);
-                if ptr.read() == 0 {
-                    if next.read() == 0 {
+                let next = unsafe {ptr.add(1)};
+                if unsafe {ptr.read() == 0} {
+                    if unsafe {next.read() == 0} {
                         // We found the double-null terminator
                         size += 2;
                         break;
@@ -92,9 +92,9 @@ impl EnvironmentBlock {
                 size += 1;
             }
 
-            let slice = std::slice::from_raw_parts(self.0 as *const u16, size);
+            let slice = unsafe {std::slice::from_raw_parts(self.0 as *const u16, size)};
             slice.to_vec()
-        }
+        
     }
 }
 
